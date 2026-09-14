@@ -6,7 +6,7 @@ expects: {duration, segments[start, end, text]}.
 import os
 import re
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from ..config import LOCAL_OUTPUT_DIR, LOCAL_WHISPER_DEVICE, LOCAL_WHISPER_MODEL
 
@@ -16,6 +16,13 @@ def _transcript_cache_path(media_path: str) -> Path:
     cache_dir = Path(LOCAL_OUTPUT_DIR)
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / (Path(media_path).stem + ".srt")
+
+
+def _transcript_json_cache_path(media_path: str) -> Path:
+    """Return the .json cache path for word-level timestamps."""
+    cache_dir = Path(LOCAL_OUTPUT_DIR)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / (Path(media_path).stem + ".transcript.json")
 
 
 def _format_srt_timestamp(seconds: float) -> str:
@@ -50,7 +57,39 @@ def _write_srt_cache(media_path: str, transcript: Dict) -> Path:
         lines.append("")
 
     cache_path.write_text("\n".join(lines), encoding="utf-8")
+
+    # Also save full JSON cache with word timestamps
+    try:
+        import json
+        json_path = _transcript_json_cache_path(media_path)
+        json_path.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[transcribe/local] could not save json cache: {e}", flush=True)
+
     return cache_path
+
+
+def _synthesize_words(segment: Dict) -> List[Dict]:
+    """Fallback word-level timestamp synthesis for segments lacking word arrays."""
+    text = segment.get("text", "").strip()
+    words = text.split()
+    if not words:
+        return []
+    start = float(segment["start"])
+    end = float(segment["end"])
+    dur = max(0.1, end - start)
+    total_chars = sum(max(1, len(w)) for w in words)
+    cur_t = start
+    res = []
+    for w in words:
+        w_dur = (len(w) / total_chars) * dur
+        res.append({
+            "word": w,
+            "start": round(cur_t, 2),
+            "end": round(cur_t + w_dur, 2),
+        })
+        cur_t += w_dur
+    return res
 
 
 def _load_srt_cache(cache_path: Path) -> Dict:
@@ -96,19 +135,38 @@ def _resolve_device() -> str:
 
 
 def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
-    """Run faster-whisper on a local file path, caching the result as .srt."""
+    """Run faster-whisper on a local file path, caching the result as .srt and .json."""
+    json_cache_path = _transcript_json_cache_path(media_path)
     cache_path = _transcript_cache_path(media_path)
+
+    # 1. Check if JSON cache with word timestamps exists
+    if json_cache_path.exists():
+        source_mtime = os.path.getmtime(media_path)
+        if json_cache_path.stat().st_mtime >= source_mtime:
+            try:
+                import json
+                cached = json.loads(json_cache_path.read_text(encoding="utf-8"))
+                if cached.get("segments") and cached.get("duration", 0) > 0:
+                    print(f"[transcribe/local] reusing cached JSON transcript with words: {json_cache_path}", flush=True)
+                    return cached
+            except Exception as e:
+                print(f"[transcribe/local] could not read json cache: {e}", flush=True)
+
+    # 2. Check if SRT cache exists
     if cache_path.exists():
         source_mtime = os.path.getmtime(media_path)
         cache_mtime = cache_path.stat().st_mtime
         if cache_mtime >= source_mtime:
             print(f"[transcribe/local] reusing cached transcript: {cache_path}", flush=True)
             cached = _load_srt_cache(cache_path)
-            # Treat empty cache as invalid (likely from a failed/partial run) — delete and re-transcribe
             if not cached["segments"] or cached["duration"] <= 0.0:
                 print(f"[transcribe/local] cache is empty/invalid, deleting: {cache_path}", flush=True)
                 cache_path.unlink(missing_ok=True)
             else:
+                # Ensure each segment has word-level timestamps
+                for seg in cached["segments"]:
+                    if "words" not in seg or not seg["words"]:
+                        seg["words"] = _synthesize_words(seg)
                 print(
                     f"[transcribe/local] {len(cached['segments'])} cached segments, "
                     f"{cached['duration']:.0f}s of audio",
@@ -125,17 +183,23 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
         ) from e
 
     device = _resolve_device()
-    compute_type = "float16" if device == "cuda" else "int8"
-    print(f"[transcribe/local] faster-whisper model={LOCAL_WHISPER_MODEL} device={device}", flush=True)
+    compute_type = "int8"
+    print(f"[transcribe/local] faster-whisper model={LOCAL_WHISPER_MODEL} device={device} compute_type={compute_type} cpu_threads=4", flush=True)
 
     from ..config import LOCAL_WHISPER_VAD_FILTER, LOCAL_WHISPER_VAD_PARAMETERS
 
-    model = WhisperModel(LOCAL_WHISPER_MODEL, device=device, compute_type=compute_type)
+    model = WhisperModel(
+        LOCAL_WHISPER_MODEL,
+        device=device,
+        compute_type=compute_type,
+        cpu_threads=4,
+    )
 
     transcribe_kwargs = {
         "audio": media_path,
         "language": language,
-        "beam_size": 5,
+        "beam_size": 1,  # Ultra-fast decoding
+        "word_timestamps": True,
         "condition_on_previous_text": False,
     }
     if LOCAL_WHISPER_VAD_FILTER:
@@ -148,11 +212,23 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
 
     segments = []
     for s in segments_iter:
-        segments.append({
+        seg_dict = {
             "start": float(s.start),
             "end": float(s.end),
             "text": (s.text or "").strip(),
-        })
+        }
+        if hasattr(s, "words") and s.words:
+            seg_dict["words"] = [
+                {
+                    "start": float(w.start),
+                    "end": float(w.end),
+                    "word": (w.word or "").strip(),
+                }
+                for w in s.words
+            ]
+        else:
+            seg_dict["words"] = _synthesize_words(seg_dict)
+        segments.append(seg_dict)
 
     duration = float(getattr(info, "duration", 0.0)) or (segments[-1]["end"] if segments else 0.0)
     print(f"[transcribe/local] {len(segments)} segments, {duration:.0f}s of audio", flush=True)

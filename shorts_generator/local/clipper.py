@@ -24,12 +24,13 @@ def _ratio(aspect_ratio: str) -> float:
 
 def _cut_subclip(source_path: str, start: float, end: float, out_path: str) -> str:
     """ffmpeg -ss start -to end → re-encoded mp4 with audio."""
+    dur = max(0.1, end - start)
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
-        "-i", source_path,
         "-ss", f"{start:.3f}",
-        "-to", f"{end:.3f}",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        "-i", source_path,
+        "-t", f"{dur:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-threads", "0",
         "-c:a", "aac", "-b:a", "128k",
         out_path,
     ]
@@ -106,14 +107,15 @@ def _reframe_vertical(in_path: str, out_path: str, aspect_ratio: str) -> str:
     cap.release()
     writer.release()
 
-    # Mux audio from the cut clip back onto the silent reframed video.
+    # Mux audio and re-encode to H.264 with yuv420p for full browser HTML5 video compatibility.
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-i", silent_path,
         "-i", in_path,
-        "-c:v", "copy",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-threads", "0",
         "-c:a", "aac", "-b:a", "128k",
         "-map", "0:v:0", "-map", "1:a:0?",
+        "-movflags", "+faststart",
         "-shortest",
         out_path,
     ]
@@ -151,6 +153,11 @@ def crop_highlights_local(
     results: List[Dict] = []
     for i, h in enumerate(highlights, 1):
         out_path = os.path.join(out_dir, f"short_{i:02d}.mp4")
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 10000:
+            print(f"[clip/local] {i}/{len(highlights)}: reusing cached clip {out_path}", flush=True)
+            results.append({**h, "clip_url": out_path})
+            continue
+
         print(f"[clip/local] {i}/{len(highlights)}: {h.get('title', '(untitled)')}", flush=True)
         try:
             crop_clip_local(

@@ -131,5 +131,76 @@ def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[s
                     path = stem + ext
                     break
 
+        # Cache metadata including actual YouTube video title
+        try:
+            actual_vid = info.get("id") or video_id
+            if actual_vid:
+                meta_path = os.path.join(out_dir, f"source_{actual_vid}.info.json")
+                import json
+                with open(meta_path, "w", encoding="utf-8") as mf:
+                    json.dump({
+                        "id": actual_vid,
+                        "title": info.get("title") or f"Video ({actual_vid})",
+                        "duration": info.get("duration", 0.0),
+                        "channel": info.get("uploader") or info.get("channel"),
+                    }, mf, indent=2)
+        except Exception as e:
+            print(f"[download/local] warning: could not cache info.json: {e}", flush=True)
+
     print(f"[download/local] ready: {path}", flush=True)
     return path
+
+
+def get_youtube_video_title(video_url: str, out_dir: Optional[str] = None) -> str:
+    """Safely retrieves the actual YouTube video title from disk cache or yt-dlp metadata."""
+    if not video_url:
+        return "YouTube Video"
+
+    out_dir = out_dir or LOCAL_OUTPUT_DIR
+    video_id = _extract_youtube_video_id(video_url)
+
+    if video_id:
+        meta_path = os.path.join(out_dir, f"source_{video_id}.info.json")
+        if os.path.exists(meta_path):
+            try:
+                import json
+                with open(meta_path, "r", encoding="utf-8") as mf:
+                    data = json.load(mf)
+                    if data.get("title"):
+                        return data["title"]
+            except Exception:
+                pass
+
+    # Query yt-dlp metadata without downloading
+    try:
+        yt_dlp = _import_ytdlp()
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": False,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            title = info.get("title") if info else None
+            if title:
+                if video_id:
+                    os.makedirs(out_dir, exist_ok=True)
+                    meta_path = os.path.join(out_dir, f"source_{video_id}.info.json")
+                    try:
+                        import json
+                        with open(meta_path, "w", encoding="utf-8") as mf:
+                            json.dump({
+                                "id": video_id,
+                                "title": title,
+                                "duration": info.get("duration", 0.0),
+                                "channel": info.get("uploader") or info.get("channel"),
+                            }, mf, indent=2)
+                    except Exception:
+                        pass
+                return title
+    except Exception as e:
+        print(f"[download/title] error fetching title for {video_url}: {e}", flush=True)
+
+    return f"Video ({video_id})" if video_id else "YouTube Video"
+

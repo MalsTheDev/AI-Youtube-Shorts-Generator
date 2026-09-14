@@ -28,7 +28,7 @@ def call_openai_llm(prompt: str) -> str:
 
 
 def call_gemini_llm(prompt: str) -> str:
-    """Gemini backend used by --mode local when LLM_PROVIDER=gemini."""
+    """Gemini backend used by --mode local with multi-model fallback and retry."""
     try:
         from google import genai  # type: ignore
     except ImportError as e:
@@ -37,17 +37,44 @@ def call_gemini_llm(prompt: str) -> str:
             "    pip install -r requirements-local.txt"
         ) from e
 
+    import time
     client = genai.Client(api_key=require_gemini_key())
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config={
-            "temperature": 0.2,
-            "response_mime_type": "application/json",
-            "max_output_tokens": 8192,
-        },
-    )
-    return response.text or ""
+
+    candidate_models = [
+        GEMINI_MODEL,
+        "gemini-flash-latest",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+    ]
+    seen = set()
+    models_to_try = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
+
+    last_error = None
+    for model_name in models_to_try:
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config={
+                        "temperature": 0.2,
+                        "response_mime_type": "application/json",
+                        "max_output_tokens": 8192,
+                    },
+                )
+                if response and response.text:
+                    return response.text
+            except Exception as e:
+                err_str = str(e)
+                last_error = e
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str:
+                    print(f"[llm/gemini] Model {model_name} rate limit on attempt {attempt + 1}. Trying fallback...", flush=True)
+                    time.sleep(2 * (attempt + 1))
+                else:
+                    print(f"[llm/gemini] Model {model_name} error: {e}. Trying fallback model...", flush=True)
+                    break
+
+    raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
 
 
 def call_local_llm(prompt: str) -> str:

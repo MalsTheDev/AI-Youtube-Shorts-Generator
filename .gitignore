@@ -6,3 +6,23 @@ venv/
 output/
 *.mp4
 .DS_Store
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+.npm/
+
+# Python artifacts
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# OS / Editor
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
