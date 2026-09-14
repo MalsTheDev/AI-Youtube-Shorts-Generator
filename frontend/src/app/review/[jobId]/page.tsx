@@ -537,7 +537,7 @@ export default function ReviewJobPage() {
 
       // Poll until render completion
       let attempts = 0;
-      const maxAttempts = 180; // 4.5 minutes max
+      const maxAttempts = 480; // 12 minutes max (re-encoding concat takes longer)
       const pollInterval = 1500; // 1.5 seconds
 
       const pollTimer = setInterval(async () => {

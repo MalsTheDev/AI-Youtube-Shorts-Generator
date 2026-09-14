@@ -486,6 +486,29 @@ async def lifespan(app: FastAPI):
             j_data["progress"] = "Queued for processing..."
             job_queue.put_nowait(j_id)
     worker_task = asyncio.create_task(background_worker())
+
+    # Startup recovery: fix jobs stuck as "rendering" from a crashed previous server
+    recovered = 0
+    for j_id, j_data in jobs_db.items():
+        if j_data.get("render_status") == "rendering":
+            expected_mp4 = os.path.join(OUTPUT_DIR, f"job_{j_id}", "final_short.mp4")
+            if os.path.exists(expected_mp4):
+                j_data["render_status"] = "completed"
+                j_data["status"] = "completed"
+                j_data["render_error"] = None
+                j_data["render_progress"] = "Compilation completed successfully."
+                if not j_data.get("final_video_url"):
+                    j_data["final_video_url"] = f"/output/job_{j_id}/final_short.mp4"
+                recovered += 1
+            else:
+                # Render was interrupted and output doesn't exist — mark as failed
+                j_data["render_status"] = "failed"
+                j_data["render_error"] = "Server restarted during render. Please re-render."
+                j_data["render_progress"] = "Render interrupted by server restart."
+                recovered += 1
+    if recovered:
+        print(f"[startup] Recovered {recovered} stuck 'rendering' jobs.", flush=True)
+        _save_jobs_to_disk()
     yield
     if worker_task:
         worker_task.cancel()

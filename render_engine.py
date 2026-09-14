@@ -709,25 +709,25 @@ def render_single_segment(
         # Subtle clip transition + text appear animation
         if layout_mode == "1:1":
             fg_comp = (
-                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic[v_bg];"
-                "[0:v]crop=ih:ih:(iw-ih)/2:0,scale=1080:1080,fade=t=in:st=0:d=0.18:color=white[v_fg];"
+                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
+                "[0:v]crop=ih:ih:(iw-ih)/2:0,scale=1080:1080,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_fg];"
                 "[v_bg][v_fg]overlay=x='if(lt(t,0.25), 60*pow(1-t/0.25, 2), 0)':y=720[v_comp]"
             )
         elif layout_mode == "16:9":
             fg_comp = (
-                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic[v_bg];"
-                "[0:v]scale=1080:608,fade=t=in:st=0:d=0.18:color=white[v_fg];"
+                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
+                "[0:v]scale=1080:608,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_fg];"
                 "[v_bg][v_fg]overlay=x='if(lt(t,0.25), 60*pow(1-t/0.25, 2), 0)':y=720[v_comp]"
             )
         else:
             fg_comp = (
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,fade=t=in:st=0:d=0.18:color=white[v_comp]"
+                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_comp]"
             )
 
         video_filter = (
             f"{fg_comp};"
             f"[v_comp][1:v]overlay=0:0[v_base];"
-            f"[v_base][2:v]overlay=x='if(lt(t,0.35), -800*pow(1-t/0.35, 2), 0)':y=0{ass_filter}[v_out]"
+            f"[v_base][2:v]overlay=x='if(lt(t,0.35), -800*pow(1-t/0.35, 2), 0)':y=0{ass_filter},setsar=1[v_out]"
         )
 
         if has_swoosh and has_source_audio:
@@ -751,25 +751,28 @@ def render_single_segment(
         # Fallback static
         if layout_mode == "1:1":
             filter_complex = (
-                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic[v_bg];"
-                "[0:v]crop=ih:ih:(iw-ih)/2:0,scale=1080:1080[v_fg];"
+                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
+                "[0:v]crop=ih:ih:(iw-ih)/2:0,scale=1080:1080,setsar=1[v_fg];"
                 f"[v_bg][v_fg]overlay=0:720[v_comp];"
-                f"[v_comp][1:v]overlay=0:0{ass_filter}[v_out]"
+                f"[v_comp][1:v]overlay=0:0{ass_filter},setsar=1[v_out]"
             )
         elif layout_mode == "16:9":
             filter_complex = (
-                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic[v_bg];"
-                "[0:v]scale=1080:608[v_fg];"
+                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
+                "[0:v]scale=1080:608,setsar=1[v_fg];"
                 f"[v_bg][v_fg]overlay=0:720[v_comp];"
-                f"[v_comp][1:v]overlay=0:0{ass_filter}[v_out]"
+                f"[v_comp][1:v]overlay=0:0{ass_filter},setsar=1[v_out]"
             )
         else:
             filter_complex = (
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2[v_bg];"
-                f"[v_bg][1:v]overlay=0:0{ass_filter}[v_out]"
+                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,setsar=1[v_bg];"
+                f"[v_bg][1:v]overlay=0:0{ass_filter},setsar=1[v_out]"
             )
         audio_map = ["0:a:0?"]
 
+    # Write to a temp file first then rename — avoids the "+faststart re-open" failure
+    # when a partially-written file from a previous failed render still exists on disk.
+    tmp_path = out_path + ".tmp.mp4"
     cmd.extend([
         "-filter_complex", filter_complex,
         "-map", "[v_out]",
@@ -778,10 +781,13 @@ def render_single_segment(
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
         "-t", f"{duration:.3f}",
         "-movflags", "+faststart",
-        out_path,
+        tmp_path,
     ])
     subprocess.run(cmd, check=True)
+    # Atomic rename: replaces any stale file from a previous run
+    os.replace(tmp_path, out_path)
     return out_path
+
 
 
 def render_ranking_short(
