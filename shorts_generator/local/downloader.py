@@ -58,8 +58,11 @@ def _extract_youtube_video_id(source: str) -> Optional[str]:
     return None
 
 
-def _resolve_local_path(source: str) -> Optional[str]:
+def _resolve_local_path(source: str, out_dir: Optional[str] = None) -> Optional[str]:
     """Return a local filesystem path if the input already points at one."""
+    if not source:
+        return None
+    source = source.strip()
     parsed = urlparse(source)
     if parsed.scheme == "file":
         raw_path = unquote(parsed.path)
@@ -70,14 +73,35 @@ def _resolve_local_path(source: str) -> Optional[str]:
             return str(candidate.resolve())
         raise RuntimeError(f"Local file URL does not exist: {source}")
 
+    # Handle localhost / 127.0.0.1 output URL: e.g. http://localhost:8000/output/uploads/...
     if parsed.scheme in ("http", "https"):
+        host = (parsed.netloc or "").split(":")[0].lower()
+        if host in ("localhost", "127.0.0.1") and "/output/" in parsed.path:
+            rel_sub = parsed.path.split("/output/", 1)[1].lstrip("/")
+            out_root = out_dir or LOCAL_OUTPUT_DIR
+            candidate = Path(out_root) / rel_sub
+            if candidate.exists() and candidate.is_file():
+                return str(candidate.resolve())
         return None
+
+    # Handle /output/... or output/... relative paths
+    if source.startswith("/output/") or source.startswith("output/"):
+        rel_sub = source.split("output/", 1)[1].lstrip("/")
+        out_root = out_dir or LOCAL_OUTPUT_DIR
+        candidate = Path(out_root) / rel_sub
+        if candidate.exists() and candidate.is_file():
+            return str(candidate.resolve())
 
     candidate = Path(source).expanduser()
     if candidate.exists() and candidate.is_file():
         return str(candidate.resolve())
 
     if any(sep in source for sep in (os.sep, "/")) or source.startswith("~") or source.startswith("."):
+        # Check relative to out_dir or LOCAL_OUTPUT_DIR
+        out_root = out_dir or LOCAL_OUTPUT_DIR
+        alt = Path(out_root) / Path(source).name
+        if alt.exists() and alt.is_file():
+            return str(alt.resolve())
         raise RuntimeError(f"Local file path does not exist: {source}")
 
     return None
@@ -94,13 +118,30 @@ def _existing_download(out_dir: str, video_id: str) -> Optional[str]:
 
 def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[str] = None) -> str:
     """Download a remote URL or return a local file path unchanged."""
-    local_path = _resolve_local_path(video_url)
+    out_dir = out_dir or LOCAL_OUTPUT_DIR
+    local_path = _resolve_local_path(video_url, out_dir=out_dir)
     if local_path:
         print(f"[download/local] using local file: {local_path}", flush=True)
         return local_path
 
+    parsed = urlparse(video_url)
+    # Direct remote MP4/video download support
+    if parsed.scheme in ("http", "https") and parsed.path.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
+        filename = Path(parsed.path).name or "remote_clip.mp4"
+        os.makedirs(out_dir, exist_ok=True)
+        dest_path = os.path.join(out_dir, filename)
+        if not os.path.exists(dest_path):
+            print(f"[download/direct] streaming remote video: {video_url} -> {dest_path}", flush=True)
+            import requests
+            resp = requests.get(video_url, stream=True, timeout=60)
+            resp.raise_for_status()
+            with open(dest_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+        return dest_path
+
     yt_dlp = _import_ytdlp()
-    out_dir = out_dir or LOCAL_OUTPUT_DIR
     os.makedirs(out_dir, exist_ok=True)
 
     video_id = _extract_youtube_video_id(video_url)
@@ -152,11 +193,16 @@ def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[s
 
 
 def get_youtube_video_title(video_url: str, out_dir: Optional[str] = None) -> str:
-    """Safely retrieves the actual YouTube video title from disk cache or yt-dlp metadata."""
+    """Safely retrieves the video title from disk cache, file stem, or yt-dlp metadata."""
     if not video_url:
-        return "YouTube Video"
+        return "Video Clip"
 
     out_dir = out_dir or LOCAL_OUTPUT_DIR
+    local_path = _resolve_local_path(video_url, out_dir=out_dir)
+    if local_path and os.path.exists(local_path):
+        stem = Path(local_path).stem.replace("source_", "").replace("_", " ").title()
+        return stem or "Video Clip"
+
     video_id = _extract_youtube_video_id(video_url)
 
     if video_id:
@@ -171,36 +217,42 @@ def get_youtube_video_title(video_url: str, out_dir: Optional[str] = None) -> st
             except Exception:
                 pass
 
-    # Query yt-dlp metadata without downloading
-    try:
-        yt_dlp = _import_ytdlp()
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "extract_flat": False,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            title = info.get("title") if info else None
-            if title:
-                if video_id:
-                    os.makedirs(out_dir, exist_ok=True)
-                    meta_path = os.path.join(out_dir, f"source_{video_id}.info.json")
-                    try:
-                        import json
-                        with open(meta_path, "w", encoding="utf-8") as mf:
-                            json.dump({
-                                "id": video_id,
-                                "title": title,
-                                "duration": info.get("duration", 0.0),
-                                "channel": info.get("uploader") or info.get("channel"),
-                            }, mf, indent=2)
-                    except Exception:
-                        pass
-                return title
-    except Exception as e:
-        print(f"[download/title] error fetching title for {video_url}: {e}", flush=True)
+    # Only run yt-dlp metadata query for remote URLs that look like YouTube
+    parsed = urlparse(video_url)
+    if parsed.scheme in ("http", "https") and any(h in (parsed.netloc or "").lower() for h in ("youtube.com", "youtu.be")):
+        try:
+            yt_dlp = _import_ytdlp()
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "extract_flat": False,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                title = info.get("title") if info else None
+                if title:
+                    if video_id:
+                        os.makedirs(out_dir, exist_ok=True)
+                        meta_path = os.path.join(out_dir, f"source_{video_id}.info.json")
+                        try:
+                            import json
+                            with open(meta_path, "w", encoding="utf-8") as mf:
+                                json.dump({
+                                    "id": video_id,
+                                    "title": title,
+                                    "duration": info.get("duration", 0.0),
+                                    "channel": info.get("uploader") or info.get("channel"),
+                                }, mf, indent=2)
+                        except Exception:
+                            pass
+                    return title
+        except Exception as e:
+            print(f"[download/title] error fetching title for {video_url}: {e}", flush=True)
 
-    return f"Video ({video_id})" if video_id else "YouTube Video"
+    if video_id:
+        return f"Video ({video_id})"
+    # Extract filename from path/URL as title fallback
+    path_stem = Path(parsed.path).stem.replace("_", " ").title()
+    return path_stem if path_stem else "Video Clip"
 

@@ -17,11 +17,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 FONTS_DIR = os.path.join(REPO_ROOT, "fonts")
+INTER_FONT_PATH = os.path.join(FONTS_DIR, "Inter-Bold.ttf")
+LIBERATION_FONT_PATH = os.path.join(FONTS_DIR, "LiberationSans-Bold.ttf")
+NOTO_SANS_PATH = os.path.join(FONTS_DIR, "NotoSans-Bold.ttf")
 ANTON_FONT_PATH = os.path.join(FONTS_DIR, "Anton-Regular.ttf")
 MONTSERRAT_FONT_PATH = os.path.join(FONTS_DIR, "Montserrat-Black.ttf")
 DEJAVU_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 NOTO_EMOJI_PATH = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
 SWOOSH_SOUND_PATH = os.path.join(REPO_ROOT, "frontend", "swoosh.mp3")
+CORE_SOUND_PATH = os.path.join(REPO_ROOT, "frontend", "core.mp3")
 
 _emoji_font = None
 if os.path.exists(NOTO_EMOJI_PATH):
@@ -77,12 +81,14 @@ def _render_emoji_glyph(char: str, target_h: int) -> Optional[Image.Image]:
     return None
 
 
-def _get_font(size: int, preferred: str = "anton") -> ImageFont.FreeTypeFont:
-    candidates = (
-        [ANTON_FONT_PATH, MONTSERRAT_FONT_PATH, DEJAVU_FONT_PATH]
-        if preferred == "anton"
-        else [MONTSERRAT_FONT_PATH, ANTON_FONT_PATH, DEJAVU_FONT_PATH]
-    )
+def _get_font(size: int, preferred: str = "minimal") -> ImageFont.FreeTypeFont:
+    if preferred == "anton":
+        candidates = [ANTON_FONT_PATH, INTER_FONT_PATH, DEJAVU_FONT_PATH]
+    elif preferred == "montserrat":
+        candidates = [MONTSERRAT_FONT_PATH, INTER_FONT_PATH, LIBERATION_FONT_PATH, DEJAVU_FONT_PATH]
+    else:  # "minimal" (default generic minimal font) or "inter"
+        candidates = [INTER_FONT_PATH, LIBERATION_FONT_PATH, NOTO_SANS_PATH, MONTSERRAT_FONT_PATH, DEJAVU_FONT_PATH]
+
     for candidate in candidates:
         if os.path.exists(candidate) and os.path.getsize(candidate) > 1000:
             try:
@@ -97,16 +103,16 @@ def _draw_sheared_line(
     y: int,
     chunks: List[Tuple[str, Tuple[int, int, int, int]]],
     font: ImageFont.FreeTypeFont,
-    shear: float = 0.20,
+    shear: float = 0.0,
     align: str = "center",
     left_x: int = 90,
-    stroke_width: int = 7,
+    stroke_width: int = 4,
     stroke_color: Tuple[int, int, int, int] = (0, 0, 0, 255),
-    shadow_offset: Tuple[int, int] = (5, 8),
-    shadow_color: Tuple[int, int, int, int] = (0, 0, 0, 220),
+    shadow_offset: Tuple[int, int] = (3, 5),
+    shadow_color: Tuple[int, int, int, int] = (0, 0, 0, 190),
     spacing: int = 14,
 ) -> int:
-    """Draw multi-colored italicized text with heavy outline, full-color emojis, and drop shadow."""
+    """Draw multi-colored text with outline, full-color emojis, and drop shadow."""
     dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     elements = []
     total_w = 0
@@ -183,13 +189,16 @@ def _draw_sheared_line(
             strip.alpha_composite(img, (cur_x, pad_y + (max_h - h) // 2))
             cur_x += w + 8
 
-    # 3. Shear transform (italic slant)
-    sheared = strip.transform(
-        (sw, sh),
-        Image.AFFINE,
-        (1, shear, -shear * (sh / 2), 0, 1, 0),
-        Image.BICUBIC,
-    )
+    # 3. Optional shear transform (italic slant if requested)
+    if abs(shear) > 0.001:
+        sheared = strip.transform(
+            (sw, sh),
+            Image.AFFINE,
+            (1, shear, -shear * (sh / 2), 0, 1, 0),
+            Image.BICUBIC,
+        )
+    else:
+        sheared = strip
 
     if align == "center":
         dest_x = (base_img.width - sw) // 2
@@ -205,7 +214,7 @@ def _parse_title_into_chunks(header_title: str) -> Tuple[List[Tuple[str, Tuple[i
     """Parse header text into Line 1 and Line 2 with viral styling colors."""
     clean = header_title.strip()
     if not clean:
-        clean = "RANKING BEST RANDOM MOMENTS FAMILY GUY"
+        clean = "RANKING VIRAL MOMENTS"
 
     # Explicit line breaks via \n or |
     if "\n" in clean or "|" in clean:
@@ -257,14 +266,24 @@ def generate_rank_overlay_png(
     out_path: str,
     layout_mode: str = "1:1",
     channel_handle: Optional[str] = None,
+    countdown_order: bool = False,
+    font_family: str = "minimal",
 ) -> Tuple[str, str]:
     """Generate 1080x1920 base and active overlay PNGs matching viral ranking reference."""
     base_img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     active_img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
 
-    title_font = _get_font(74, preferred="anton")
-    rank_font = _get_font(62, preferred="anton")
-    watermark_font = _get_font(52, preferred="anton")
+    is_anton = str(font_family).lower() == "anton"
+    pref = "anton" if is_anton else "minimal"
+
+    title_font = _get_font(74 if is_anton else 68, preferred=pref)
+    rank_font = _get_font(62 if is_anton else 56, preferred=pref)
+    watermark_font = _get_font(52 if is_anton else 46, preferred=pref)
+
+    shear = 0.20 if is_anton else 0.0
+    stroke_w = 7 if is_anton else 4
+    shadow_off = (5, 8) if is_anton else (3, 5)
+    shadow_col = (0, 0, 0, 220) if is_anton else (0, 0, 0, 180)
 
     dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
 
@@ -274,11 +293,31 @@ def generate_rank_overlay_png(
     line1_chunks, line2_chunks = _parse_title_into_chunks(header_title)
 
     y_line1 = 78
-    _draw_sheared_line(base_img, y=y_line1, chunks=line1_chunks, font=title_font, align="center")
+    _draw_sheared_line(
+        base_img,
+        y=y_line1,
+        chunks=line1_chunks,
+        font=title_font,
+        shear=shear,
+        align="center",
+        stroke_width=stroke_w,
+        shadow_offset=shadow_off,
+        shadow_color=shadow_col,
+    )
 
     if line2_chunks:
         y_line2 = y_line1 + 92
-        _draw_sheared_line(base_img, y=y_line2, chunks=line2_chunks, font=title_font, align="center")
+        _draw_sheared_line(
+            base_img,
+            y=y_line2,
+            chunks=line2_chunks,
+            font=title_font,
+            shear=shear,
+            align="center",
+            stroke_width=stroke_w,
+            shadow_offset=shadow_off,
+            shadow_color=shadow_col,
+        )
 
     # -------------------------------------------------------------
     # 2. Ranking Numbers & Active / Past Item Titles
@@ -288,47 +327,66 @@ def generate_rank_overlay_png(
     total_avail_height = 700 - start_y
     line_gap = max(70, min(86, total_avail_height // max(1, max_items)))
 
+    # ALWAYS show ladder numbers linearly: 1, 2, 3, 4, 5 (top to bottom)
+    # In countdown mode, clips are placed BOTTOM-UP on the ladder:
+    #   Clip 0 (plays first) → row max_items-1 (rank 5)
+    #   Clip 1 (plays second) → row max_items-2 (rank 4)
+    #   etc.
+    # In normal mode, clips map 1:1 to rows (clip 0 → row 0).
     for i in range(max_items):
-        clip = all_clips[i]
-        rank_num_str = f"{i + 1}."
-        color = RANK_PALETTE[i % len(RANK_PALETTE)]
-        is_current = (i == current_index)
-        is_past = (i < current_index)
-
+        rank_val = i + 1
+        rank_num_str = f"{rank_val}."
+        color = RANK_PALETTE[(rank_val - 1) % len(RANK_PALETTE)]
         item_y = start_y + i * line_gap
 
+        if countdown_order:
+            clip_idx_for_row = max_items - 1 - i
+            clip = all_clips[clip_idx_for_row] if clip_idx_for_row < len(all_clips) else {}
+            is_current = (clip_idx_for_row == current_index)
+            is_past = (clip_idx_for_row < current_index)
+        else:
+            clip = all_clips[i]
+            is_current = (i == current_index)
+            is_past = (i < current_index)
+
         # Measure rank number width for precise title horizontal alignment
-        bb_num = dummy_draw.textbbox((0, 0), rank_num_str, font=rank_font, stroke_width=7)
+        bb_num = dummy_draw.textbbox((0, 0), rank_num_str, font=rank_font, stroke_width=stroke_w)
         num_w = bb_num[2] - bb_num[0]
         title_x = 90 + num_w + 16
 
-        raw_title = clip.get("rank_title") or clip.get("title") or f"Moment #{i + 1}"
+        raw_title = clip.get("rank_title") or clip.get("title") or f"Moment #{rank_val}"
         # Strip leading numbers like "1. ", "2 - " while preserving full emojis
         clean_title = re.sub(r'^\d+[\.\-\s]+', '', raw_title).strip()
         if len(clean_title) > 32:
             clean_title = clean_title[:30].rstrip() + "..."
 
         if is_past:
-            # Previously revealed clip: draw number + title statically on base_img
             chunks = [(rank_num_str, color), (clean_title, (255, 255, 255, 255))]
             _draw_sheared_line(
                 base_img,
                 y=item_y,
                 chunks=chunks,
                 font=rank_font,
+                shear=shear,
                 align="left",
                 left_x=90,
+                stroke_width=stroke_w,
+                shadow_offset=shadow_off,
+                shadow_color=shadow_col,
                 spacing=16,
             )
         elif is_current:
-            # Active clip: number on base_img, title on active_img for slide-in animation
             _draw_sheared_line(
                 base_img,
                 y=item_y,
                 chunks=[(rank_num_str, color)],
                 font=rank_font,
+                shear=shear,
                 align="left",
                 left_x=90,
+                stroke_width=stroke_w,
+                shadow_offset=shadow_off,
+                shadow_color=shadow_col,
                 spacing=16,
             )
             _draw_sheared_line(
@@ -336,19 +394,26 @@ def generate_rank_overlay_png(
                 y=item_y,
                 chunks=[(clean_title, (255, 255, 255, 255))],
                 font=rank_font,
+                shear=shear,
                 align="left",
                 left_x=title_x,
+                stroke_width=stroke_w,
+                shadow_offset=shadow_off,
+                shadow_color=shadow_col,
                 spacing=16,
             )
         else:
-            # Future unrevealed clip: only number on base_img
             _draw_sheared_line(
                 base_img,
                 y=item_y,
                 chunks=[(rank_num_str, color)],
                 font=rank_font,
+                shear=shear,
                 align="left",
                 left_x=90,
+                stroke_width=stroke_w,
+                shadow_offset=shadow_off,
+                shadow_color=shadow_col,
                 spacing=16,
             )
 
@@ -364,10 +429,11 @@ def generate_rank_overlay_png(
             y=1830,
             chunks=[(handle_text, (230, 230, 230, 215))],
             font=watermark_font,
+            shear=shear,
             align="center",
-            stroke_width=5,
+            stroke_width=max(3, stroke_w - 2),
             stroke_color=(0, 0, 0, 180),
-            shadow_offset=(3, 5),
+            shadow_offset=(2, 4),
             shadow_color=(0, 0, 0, 160),
         )
 
@@ -390,21 +456,30 @@ def generate_single_title_overlay_png(
     out_path: str,
     layout_mode: str = "1:1",
     channel_handle: Optional[str] = None,
+    font_family: str = "minimal",
 ) -> Tuple[str, str]:
     """Generate 1080x1920 single title hook overlay PNG matching the viral spotlight reference image.
 
     Features:
-    1. Prominent centered title hook at the top (white font, thick black stroke & shadow).
+    1. Prominent centered title hook at the top (white font, crisp stroke & shadow).
     2. Zero ranking numbers, zero ranking list.
     3. Channel watermark handle at the bottom if specified.
     """
     base_img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     active_img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
 
-    title_font = _get_font(76, preferred="anton")
-    watermark_font = _get_font(52, preferred="anton")
+    is_anton = str(font_family).lower() == "anton"
+    pref = "anton" if is_anton else "minimal"
 
-    clean = header_title.strip() if header_title else "BRIAN OWES STEWIE MONEY"
+    title_font = _get_font(76 if is_anton else 70, preferred=pref)
+    watermark_font = _get_font(52 if is_anton else 46, preferred=pref)
+
+    shear = 0.15 if is_anton else 0.0
+    stroke_w = 9 if is_anton else 4
+    shadow_off = (4, 7) if is_anton else (3, 5)
+    shadow_col = (0, 0, 0, 230) if is_anton else (0, 0, 0, 180)
+
+    clean = header_title.strip() if header_title else "VIRAL MOMENTS HIGHLIGHT"
 
     # Split into 1 or 2 lines if delimited or over 26 characters
     if "\n" in clean or "|" in clean:
@@ -428,24 +503,24 @@ def generate_single_title_overlay_png(
             y=y1,
             chunks=[(line1, (255, 255, 255, 255))],
             font=title_font,
-            shear=0.15,
+            shear=shear,
             align="center",
-            stroke_width=9,
+            stroke_width=stroke_w,
             stroke_color=(0, 0, 0, 255),
-            shadow_offset=(4, 7),
-            shadow_color=(0, 0, 0, 230),
+            shadow_offset=shadow_off,
+            shadow_color=shadow_col,
         )
         _draw_sheared_line(
             base_img,
             y=y2,
             chunks=[(line2, (255, 255, 255, 255))],
             font=title_font,
-            shear=0.15,
+            shear=shear,
             align="center",
-            stroke_width=9,
+            stroke_width=stroke_w,
             stroke_color=(0, 0, 0, 255),
-            shadow_offset=(4, 7),
-            shadow_color=(0, 0, 0, 230),
+            shadow_offset=shadow_off,
+            shadow_color=shadow_col,
         )
     else:
         _draw_sheared_line(
@@ -453,12 +528,12 @@ def generate_single_title_overlay_png(
             y=135,
             chunks=[(line1, (255, 255, 255, 255))],
             font=title_font,
-            shear=0.15,
+            shear=shear,
             align="center",
-            stroke_width=9,
+            stroke_width=stroke_w,
             stroke_color=(0, 0, 0, 255),
-            shadow_offset=(4, 7),
-            shadow_color=(0, 0, 0, 230),
+            shadow_offset=shadow_off,
+            shadow_color=shadow_col,
         )
 
     # -------------------------------------------------------------
@@ -473,11 +548,11 @@ def generate_single_title_overlay_png(
             y=1830,
             chunks=[(handle_text, (230, 230, 230, 215))],
             font=watermark_font,
-            shear=0.15,
+            shear=shear,
             align="center",
-            stroke_width=5,
+            stroke_width=max(3, stroke_w - 2),
             stroke_color=(0, 0, 0, 180),
-            shadow_offset=(3, 5),
+            shadow_offset=(2, 4),
             shadow_color=(0, 0, 0, 160),
         )
 
@@ -669,6 +744,7 @@ def render_single_segment(
     out_path: str,
     layout_mode: str = "1:1",
     active_overlay_png: Optional[str] = None,
+    transition_type: str = "swoosh",
 ) -> str:
     """Render a single segment supporting 1:1, 16:9, or 9:16 layout modes with animations & sound."""
     start_time = float(clip_info["start_time"])
@@ -684,7 +760,8 @@ def render_single_segment(
         base_overlay = overlay_png
 
     has_active = bool(active_overlay_png and os.path.exists(active_overlay_png))
-    has_swoosh = bool(os.path.exists(SWOOSH_SOUND_PATH))
+    # Swoosh sound is only used in swoosh mode
+    has_swoosh = bool(transition_type != "black_screen" and os.path.exists(SWOOSH_SOUND_PATH))
     has_source_audio = _check_has_audio(source_path)
 
     ass_filter = ""
@@ -706,29 +783,54 @@ def render_single_segment(
             cmd.extend(["-i", SWOOSH_SOUND_PATH])
 
     if has_active:
-        # Subtle clip transition + text appear animation
-        if layout_mode == "1:1":
-            fg_comp = (
-                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
-                "[0:v]crop=ih:ih:(iw-ih)/2:0,scale=1080:1080,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_fg];"
-                "[v_bg][v_fg]overlay=x='if(lt(t,0.25), 60*pow(1-t/0.25, 2), 0)':y=720[v_comp]"
-            )
-        elif layout_mode == "16:9":
-            fg_comp = (
-                "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
-                "[0:v]scale=1080:608,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_fg];"
-                "[v_bg][v_fg]overlay=x='if(lt(t,0.25), 60*pow(1-t/0.25, 2), 0)':y=720[v_comp]"
+        if transition_type == "black_screen":
+            # Clean static clip with NO transitions (no fade in, no fade out, no sliding text/video)
+            if layout_mode == "1:1":
+                fg_comp = (
+                    "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
+                    "[0:v]crop=ih:ih:(iw-ih)/2:0,scale=1080:1080,setsar=1[v_fg];"
+                    "[v_bg][v_fg]overlay=0:720[v_comp]"
+                )
+            elif layout_mode == "16:9":
+                fg_comp = (
+                    "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
+                    "[0:v]scale=1080:608,setsar=1[v_fg];"
+                    "[v_bg][v_fg]overlay=0:720[v_comp]"
+                )
+            else:
+                fg_comp = (
+                    "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,setsar=1[v_comp]"
+                )
+
+            video_filter = (
+                f"{fg_comp};"
+                f"[v_comp][1:v]overlay=0:0[v_base];"
+                f"[v_base][2:v]overlay=0:0{ass_filter},setsar=1[v_out]"
             )
         else:
-            fg_comp = (
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_comp]"
-            )
+            # Default: Subtle clip transition + text appear animation + swoosh sound
+            if layout_mode == "1:1":
+                fg_comp = (
+                    "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
+                    "[0:v]crop=ih:ih:(iw-ih)/2:0,scale=1080:1080,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_fg];"
+                    "[v_bg][v_fg]overlay=x='if(lt(t,0.25), 60*pow(1-t/0.25, 2), 0)':y=720[v_comp]"
+                )
+            elif layout_mode == "16:9":
+                fg_comp = (
+                    "[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=8:2,scale=1080:1920:flags=bicubic,setsar=1[v_bg];"
+                    "[0:v]scale=1080:608,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_fg];"
+                    "[v_bg][v_fg]overlay=x='if(lt(t,0.25), 60*pow(1-t/0.25, 2), 0)':y=720[v_comp]"
+                )
+            else:
+                fg_comp = (
+                    "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,setsar=1,fade=t=in:st=0:d=0.18:color=white[v_comp]"
+                )
 
-        video_filter = (
-            f"{fg_comp};"
-            f"[v_comp][1:v]overlay=0:0[v_base];"
-            f"[v_base][2:v]overlay=x='if(lt(t,0.35), -800*pow(1-t/0.35, 2), 0)':y=0{ass_filter},setsar=1[v_out]"
-        )
+            video_filter = (
+                f"{fg_comp};"
+                f"[v_comp][1:v]overlay=0:0[v_base];"
+                f"[v_base][2:v]overlay=x='if(lt(t,0.35), -800*pow(1-t/0.35, 2), 0)':y=0{ass_filter},setsar=1[v_out]"
+            )
 
         if has_swoosh and has_source_audio:
             audio_filter = (
@@ -747,6 +849,7 @@ def render_single_segment(
         else:
             filter_complex = video_filter
             audio_map = ["0:a:0?"]
+
     else:
         # Fallback static
         if layout_mode == "1:1":
@@ -789,6 +892,81 @@ def render_single_segment(
     return out_path
 
 
+def _get_audio_duration(file_path: str) -> float:
+    """Return exact audio duration in seconds using ffprobe."""
+    if not os.path.exists(file_path):
+        return 0.731
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path,
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        dur = float(res.stdout.strip())
+        return max(0.1, dur)
+    except Exception:
+        return 0.731
+
+
+def generate_black_transition_segment(
+    out_path: str,
+    overlay_png: str,
+    active_overlay_png: Optional[str] = None,
+    duration: Optional[float] = None,
+) -> str:
+    """Generate a 1080x1920 black transition segment (clip + blur blacked out) keeping Layer 1, 2, 3 overlays visible, matching exact core.mp3 duration."""
+    has_core = bool(os.path.exists(CORE_SOUND_PATH))
+    has_active = bool(active_overlay_png and os.path.exists(active_overlay_png))
+
+    if duration is None:
+        duration = _get_audio_duration(CORE_SOUND_PATH) if has_core else 0.731
+
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", f"color=c=black:s=1080x1920:r=30:d={duration:.3f}",
+        "-loop", "1", "-i", overlay_png,
+    ]
+    if has_active:
+        cmd.extend(["-loop", "1", "-i", active_overlay_png])
+
+    if has_core:
+        cmd.extend(["-i", CORE_SOUND_PATH])
+        audio_idx = 3 if has_active else 2
+        audio_filter = f";[{audio_idx}:a]apad=pad_dur={duration:.3f},atrim=0:{duration:.3f},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_out]"
+        audio_map = ["[a_out]"]
+    else:
+        cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
+        audio_idx = 3 if has_active else 2
+        audio_filter = ""
+        audio_map = [f"{audio_idx}:a"]
+
+    if has_active:
+        video_filter = (
+            "[0:v][1:v]overlay=0:0[v_base];"
+            f"[v_base][2:v]overlay=0:0,setsar=1[v_out]{audio_filter}"
+        )
+    else:
+        video_filter = (
+            f"[0:v][1:v]overlay=0:0,setsar=1[v_out]{audio_filter}"
+        )
+
+    tmp_path = out_path + ".tmp.mp4"
+    cmd.extend([
+        "-filter_complex", video_filter,
+        "-map", "[v_out]",
+        "-map", audio_map[0],
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-threads", "0",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+        "-t", f"{duration:.3f}",
+        "-movflags", "+faststart",
+        tmp_path,
+    ])
+    subprocess.run(cmd, check=True)
+    os.replace(tmp_path, out_path)
+    return out_path
+
 
 def render_ranking_short(
     source_video_path: str,
@@ -802,14 +980,17 @@ def render_ranking_short(
     captions_enabled: bool = True,
     progress_callback: Optional[Any] = None,
     template_type: str = "ranking",
+    countdown_order: bool = False,
+    transition_type: str = "swoosh",
+    font_family: str = "minimal",
 ) -> str:
     """Full pipeline: composites multiple clips into final_short.mp4 supporting ranking and single_title templates."""
     os.makedirs(work_dir, exist_ok=True)
     os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
 
-    # Clean stale segment/overlay files from previous renders to prevent Frankenstein outputs
+    # Clean stale segment/overlay/transition files from previous renders
     import glob
-    for stale in glob.glob(os.path.join(work_dir, "seg_*.mp4")):
+    for stale in glob.glob(os.path.join(work_dir, "seg_*.mp4")) + glob.glob(os.path.join(work_dir, "trans_*.mp4")):
         try:
             os.remove(stale)
         except OSError:
@@ -828,6 +1009,7 @@ def render_ranking_short(
                 raise  # Propagate cancellation signals
             except Exception:
                 pass  # Ignore non-critical callback errors
+
         seg_out = os.path.join(work_dir, f"seg_{idx + 1:02d}.mp4")
         overlay_png = os.path.join(work_dir, f"overlay_{idx + 1:02d}.png")
         ass_path: Optional[str] = None
@@ -839,6 +1021,7 @@ def render_ranking_short(
                 out_path=overlay_png,
                 layout_mode=layout_mode,
                 channel_handle=channel_handle,
+                font_family=font_family,
             )
         else:
             base_png, active_png = generate_rank_overlay_png(
@@ -848,7 +1031,19 @@ def render_ranking_short(
                 out_path=overlay_png,
                 layout_mode=layout_mode,
                 channel_handle=channel_handle,
+                countdown_order=countdown_order,
+                font_family=font_family,
             )
+
+        if idx > 0 and transition_type == "black_screen":
+            # Between clips: straight up black clip (clip + blur black, keeping layers 1,2,3) matching exact core.mp3 duration
+            trans_out = os.path.join(work_dir, f"trans_black_{idx:02d}.mp4")
+            generate_black_transition_segment(
+                out_path=trans_out,
+                overlay_png=base_png,
+                active_overlay_png=active_png,
+            )
+            segment_paths.append(trans_out)
 
         clip_source = clip.get("source_video_path") or clip.get("source_path") or source_video_path
         # Ensure absolute path for reliable FFmpeg input
@@ -878,6 +1073,7 @@ def render_ranking_short(
             ass_path=ass_path,
             out_path=seg_out,
             layout_mode=layout_mode,
+            transition_type=transition_type,
         )
         segment_paths.append(seg_out)
 
@@ -911,3 +1107,204 @@ def render_ranking_short(
 
     print(f"[render_engine] Successfully compiled final short: {final_output_path}", flush=True)
     return final_output_path
+
+
+# ==============================================================================
+# V2 Modular Template Architecture & Render Cache
+# ==============================================================================
+
+import hashlib
+import json
+
+
+def compute_render_hash(
+    production_id: str,
+    clips: List[Dict[str, Any]],
+    template: str,
+    aspect_ratio: str = "9:16",
+    layout_mode: str = "1:1",
+    caption_settings: Optional[Dict[str, Any]] = None,
+    header_title: Optional[str] = None,
+) -> str:
+    """Generate a deterministic SHA-256 hash for a production render configuration."""
+    clip_signatures = []
+    for c in clips:
+        clip_signatures.append({
+            "id": str(c.get("id") or c.get("clip_id") or ""),
+            "title": str(c.get("custom_title") or c.get("rank_title") or c.get("title") or ""),
+            "start": round(float(c.get("start_override") if c.get("start_override") is not None else c.get("start_time", 0.0)), 2),
+            "end": round(float(c.get("end_override") if c.get("end_override") is not None else c.get("end_time", 0.0)), 2),
+        })
+
+    payload = {
+        "production_id": production_id,
+        "clips": clip_signatures,
+        "template": template or "ranking",
+        "aspect_ratio": aspect_ratio or "9:16",
+        "layout_mode": layout_mode or "1:1",
+        "header_title": header_title or "",
+        "caption_settings": caption_settings or {},
+    }
+    raw = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+class BaseTemplateRenderer:
+    """Abstract base renderer for production templates."""
+    def render(
+        self,
+        production_id: str,
+        header_title: str,
+        selected_clips: List[Dict[str, Any]],
+        work_dir: str,
+        final_output_path: str,
+        layout_mode: str = "1:1",
+        channel_handle: Optional[str] = None,
+        captions_enabled: bool = True,
+        transition_type: str = "swoosh",
+        font_family: str = "minimal",
+        progress_callback: Optional[Any] = None,
+        is_preview: bool = False,
+    ) -> str:
+        raise NotImplementedError
+
+
+class RankingTemplateRenderer(BaseTemplateRenderer):
+    """Viral ranking list template with animated headers, countdown/sequential ranks, and reveals."""
+    def render(
+        self,
+        production_id: str,
+        header_title: str,
+        selected_clips: List[Dict[str, Any]],
+        work_dir: str,
+        final_output_path: str,
+        layout_mode: str = "1:1",
+        channel_handle: Optional[str] = None,
+        captions_enabled: bool = True,
+        transition_type: str = "swoosh",
+        font_family: str = "minimal",
+        progress_callback: Optional[Any] = None,
+        is_preview: bool = False,
+    ) -> str:
+        return render_ranking_short(
+            source_video_path="",
+            transcript={},
+            header_title=header_title,
+            selected_clips=selected_clips,
+            work_dir=work_dir,
+            final_output_path=final_output_path,
+            layout_mode=layout_mode,
+            channel_handle=channel_handle,
+            captions_enabled=captions_enabled,
+            progress_callback=progress_callback,
+            template_type="ranking",
+            countdown_order=False,
+            transition_type=transition_type,
+            font_family=font_family,
+        )
+
+
+class SingleTitleTemplateRenderer(BaseTemplateRenderer):
+    """Clean single hook title template with karaoke captions and framed focus."""
+    def render(
+        self,
+        production_id: str,
+        header_title: str,
+        selected_clips: List[Dict[str, Any]],
+        work_dir: str,
+        final_output_path: str,
+        layout_mode: str = "1:1",
+        channel_handle: Optional[str] = None,
+        captions_enabled: bool = True,
+        transition_type: str = "swoosh",
+        font_family: str = "minimal",
+        progress_callback: Optional[Any] = None,
+        is_preview: bool = False,
+    ) -> str:
+        return render_ranking_short(
+            source_video_path="",
+            transcript={},
+            header_title=header_title,
+            selected_clips=selected_clips,
+            work_dir=work_dir,
+            final_output_path=final_output_path,
+            layout_mode=layout_mode,
+            channel_handle=channel_handle,
+            captions_enabled=captions_enabled,
+            progress_callback=progress_callback,
+            template_type="single_title",
+            countdown_order=False,
+            transition_type=transition_type,
+            font_family=font_family,
+        )
+
+
+TEMPLATE_REGISTRY: Dict[str, BaseTemplateRenderer] = {
+    "ranking": RankingTemplateRenderer(),
+    "single_title": SingleTitleTemplateRenderer(),
+}
+
+
+def render_production(
+    production_id: str,
+    header_title: str,
+    clips: List[Dict[str, Any]],
+    template: str = "ranking",
+    aspect_ratio: str = "9:16",
+    layout_mode: str = "1:1",
+    caption_settings: Optional[Dict[str, Any]] = None,
+    channel_handle: Optional[str] = None,
+    transition_type: str = "swoosh",
+    font_family: str = "minimal",
+    is_preview: bool = False,
+    progress_callback: Optional[Any] = None,
+    output_dir: str = "output",
+) -> Tuple[str, str, bool]:
+    """Render a Short from a Production definition with deterministic caching.
+    
+    Returns:
+        (final_output_path, render_hash, is_cache_hit)
+    """
+    captions_enabled = True
+    if caption_settings and "captions_enabled" in caption_settings:
+        captions_enabled = bool(caption_settings["captions_enabled"])
+
+    render_hash = compute_render_hash(
+        production_id=production_id,
+        clips=clips,
+        template=template,
+        aspect_ratio=aspect_ratio,
+        layout_mode=layout_mode,
+        caption_settings=caption_settings,
+        header_title=header_title,
+    )
+
+    renders_dir = os.path.join(output_dir, "renders", production_id)
+    os.makedirs(renders_dir, exist_ok=True)
+    final_output_path = os.path.join(renders_dir, f"{render_hash}.mp4")
+
+    # Check Render Cache
+    if os.path.exists(final_output_path) and os.path.getsize(final_output_path) > 10000:
+        print(f"[render_engine] Cache HIT for production {production_id} ({render_hash}): reusing {final_output_path}", flush=True)
+        return final_output_path, render_hash, True
+
+    work_dir = os.path.join(renders_dir, f"work_{render_hash}")
+    os.makedirs(work_dir, exist_ok=True)
+
+    renderer = TEMPLATE_REGISTRY.get(template.lower(), TEMPLATE_REGISTRY["ranking"])
+    out = renderer.render(
+        production_id=production_id,
+        header_title=header_title,
+        selected_clips=clips,
+        work_dir=work_dir,
+        final_output_path=final_output_path,
+        layout_mode=layout_mode,
+        channel_handle=channel_handle,
+        captions_enabled=captions_enabled,
+        transition_type=transition_type,
+        font_family=font_family,
+        progress_callback=progress_callback,
+        is_preview=is_preview,
+    )
+    return out, render_hash, False
+

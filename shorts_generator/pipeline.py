@@ -23,6 +23,7 @@ def _run_local(
     language: Optional[str],
     out_dir: Optional[str] = None,
     user_prompt: Optional[str] = None,
+    **kwargs,
 ) -> Dict:
     from .local.clipper import crop_highlights_local
     from .local.downloader import download_youtube_local
@@ -78,9 +79,12 @@ def _run_local(
         all_highlights = highlights_result.get("highlights", []) or highlights_result.get("candidates", [])
 
     top = sorted(all_highlights, key=lambda h: int(h.get("score", 0)), reverse=True)[:num_clips]
-    print(f"[pipeline/local] cropping {len(top)} of {len(all_highlights)} candidates", flush=True)
-
-    shorts = crop_highlights_local(source_path, top, aspect_ratio=aspect_ratio, out_dir=out_dir)
+    
+    shorts = []
+    # In V2, source ingestion NEVER automatically crops video clips.
+    # Video preview uses native source offsets, and final rendering is a Production operation.
+    if out_dir and kwargs.get("render_clips", False):
+        shorts = crop_highlights_local(source_path, top, aspect_ratio=aspect_ratio, out_dir=out_dir)
 
     from .local.downloader import get_youtube_video_title
     video_title = get_youtube_video_title(youtube_url)
@@ -120,9 +124,10 @@ def _run_api(
         raise RuntimeError("Highlight generator returned zero clips.")
 
     top = sorted(all_highlights, key=lambda h: int(h.get("score", 0)), reverse=True)[:num_clips]
-    print(f"[pipeline] cropping {len(top)} of {len(all_highlights)} candidates", flush=True)
-
-    shorts = crop_highlights(source_url, top, aspect_ratio=aspect_ratio)
+    
+    shorts = []
+    if kwargs.get("render_clips", False):
+        shorts = crop_highlights(source_url, top, aspect_ratio=aspect_ratio)
 
     return {
         "mode": "api",
@@ -145,28 +150,9 @@ def generate_shorts(
     mode: Optional[str] = None,
     out_dir: Optional[str] = None,
     user_prompt: Optional[str] = None,
+    **kwargs,
 ) -> Dict:
-    """Run the full pipeline and return a structured result.
-
-    Args:
-        youtube_url: source URL.
-        num_clips: how many shorts to render.
-        aspect_ratio: e.g. "9:16", "1:1".
-        download_format: source resolution ("360" / "480" / "720" / "1080").
-        language: ISO-639-1 to force Whisper language detection.
-        mode: "api" (MuAPI) or "local" (yt-dlp + faster-whisper + OpenAI/Gemini + ffmpeg).
-        out_dir: optional destination directory for generated shorts.
-        user_prompt: optional custom instructions/focus for highlight detection.
-
-    Returns:
-        {
-          "mode": "api" | "local",
-          "source_video_url": str,   # hosted URL (api) or local path (local)
-          "transcript": {...},
-          "highlights": [...],       # all candidates ranked
-          "shorts": [...],           # top `num_clips` with clip_url / local path
-        }
-    """
+    """Run the full pipeline and return a structured result."""
     from .config import MUAPI_API_KEY
 
     if not mode:
@@ -186,7 +172,9 @@ def generate_shorts(
             language=language,
             out_dir=out_dir,
             user_prompt=user_prompt,
+            **kwargs,
         )
     if mode == "api":
-        return _run_api(youtube_url, num_clips, aspect_ratio, download_format, language, user_prompt=user_prompt)
+        return _run_api(youtube_url, num_clips, aspect_ratio, download_format, language, user_prompt=user_prompt, **kwargs)
+    raise ValueError(f"Unknown mode: {mode!r}. Use 'api' or 'local'.")
     raise ValueError(f"Unknown mode: {mode!r}. Use 'api' or 'local'.")
