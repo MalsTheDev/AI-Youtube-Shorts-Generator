@@ -102,7 +102,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
             <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-400 text-[11px] font-mono">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              <span>Studio V2</span>
+              <span>Studio</span>
             </div>
           </div>
         </header>

@@ -68,7 +68,7 @@ export default function DashboardPage() {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 font-semibold px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800">
-              Studio V2 Architecture
+              Studio Architecture
             </span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-zinc-100">

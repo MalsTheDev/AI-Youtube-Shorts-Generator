@@ -85,7 +85,7 @@ class ClipCandidate(Base):
 
 
 class Clip(Base):
-    """V2 Reusable Clip Entity.
+    """Reusable Clip Entity.
     
     A discovered clip is an independent reusable asset that can appear
     in multiple productions without duplicating source video files.

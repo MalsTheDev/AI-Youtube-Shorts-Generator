@@ -1,4 +1,4 @@
-"""FastAPI Backend Server for AI YouTube Shorts Studio V2.
+"""FastAPI Backend Server for AI YouTube Shorts Studio.
 
 Core Endpoints:
 - Sources: Ingest YouTube URLs or local video files, track background transcription and highlight extraction.
@@ -501,8 +501,8 @@ def _process_job_sync(job: Dict[str, Any]) -> Dict[str, Any]:
     )
     result = _normalize_stream_urls(result, job_out_dir)
 
-    # In V2, source ingestion ends after clip discovery.
-    # ZERO automatic final rendering during source processing!
+    # Source ingestion ends after clip discovery.
+    # Video rendering is strictly on-demand.
     candidates = result.get("candidates", []) or result.get("highlights", [])
 
     # Persist to MySQL (Video, ClipCandidate, Clip, Transcript, TranscriptSegment)
@@ -757,7 +757,7 @@ class AssembleClipsRequest(BaseModel):
     transition_type: Optional[str] = Field("swoosh", description="Transition style: 'swoosh' or 'black_screen'")
 
 
-# V2 Request Models
+# Request Models
 class SourceCreateRequest(BaseModel):
     urls: Optional[List[str]] = None
     url: Optional[str] = None
@@ -954,7 +954,7 @@ def _enrich_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ==============================================================================
-# V2 REST Endpoints (Sources, Clips, Productions, Renders, Dashboard)
+# REST Endpoints (Sources, Clips, Productions, Renders, Dashboard)
 # ==============================================================================
 
 @app.get("/api/dashboard/stats")
@@ -1898,7 +1898,7 @@ def get_source_clips(source_id: str):
 
 
 # ------------------------------------------------------------------------------
-# V2 Productions Endpoints
+# Productions Endpoints
 # ------------------------------------------------------------------------------
 
 @app.get("/api/productions")
@@ -2407,7 +2407,7 @@ Respond ONLY with valid JSON (no markdown):
 
 
 # ------------------------------------------------------------------------------
-# V2 Renders Endpoints
+# Renders Endpoints
 # ------------------------------------------------------------------------------
 
 @app.get("/api/renders")
@@ -2524,7 +2524,7 @@ def delete_render_item(render_id: str):
 
 
 # ------------------------------------------------------------------------------
-# V2 Bulk Clip Operations
+# Bulk Clip Operations
 # ------------------------------------------------------------------------------
 
 @app.post("/api/clips/bulk-edit")

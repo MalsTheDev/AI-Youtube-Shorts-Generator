@@ -1212,7 +1212,7 @@ def render_ranking_short(
 
 
 # ==============================================================================
-# V2 Modular Template Architecture & Render Cache
+# Modular Template Architecture & Render Cache
 # ==============================================================================
 
 import hashlib

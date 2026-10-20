@@ -1,8 +1,8 @@
-# AI YouTube Shorts Studio V2: Architecture & Migration Specification
+# AI YouTube Shorts Studio: System Architecture Specification
 
 ## 1. Executive Summary & System Overview
 
-AI YouTube Shorts Studio V2 transforms the legacy processing script and batch queue into a professional, creator-centric Short Production Studio. The core philosophy separates media discovery, asset curation, production composition, and video rendering into decoupled stages.
+AI YouTube Shorts Studio is a professional, creator-centric Short Production Studio. The core philosophy separates media discovery, asset curation, production composition, and video rendering into decoupled stages.
 
 ### Core Mental Model
 ```text

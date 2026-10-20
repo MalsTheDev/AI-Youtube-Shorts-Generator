@@ -1,4 +1,4 @@
-# 🎬 AI YouTube Shorts Studio V2
+# 🎬 AI YouTube Shorts Studio
 
 > A professional, decoupled studio for automated & curated YouTube Shorts creation. Ingest long-form videos, discover viral highlights with AI, curate a reusable clips asset library, compose multi-clip productions with non-destructive editing, and render deterministic shorts with animated countdown overlays and karaoke captions.
 
@@ -11,9 +11,9 @@
 
 ---
 
-## ⚡ What Makes V2 Different?
+## ⚡ Core Architecture & Philosophy
 
-Unlike older pipelines that immediately rendered a fixed video upon URL entry, **Shorts Studio V2** is architected as a professional creator studio:
+Unlike traditional pipelines that immediately render a fixed video upon URL entry, **AI YouTube Shorts Studio** is architected as an end-to-end creator workspace:
 
 ```text
 Source Video (YouTube / Local MP4)
