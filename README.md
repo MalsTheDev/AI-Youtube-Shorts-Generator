@@ -22,7 +22,7 @@ Source Video (YouTube / Local MP4)
   Clips Asset Library (Reusable Clips #1, #2, #3...)
        │
        ├──► Production A (e.g. "Top 3 Moments") ──► Deterministic Render (SHA-256 Cached)
-       └──► Production B (e.g. "Single Highlight") ──► YouTube Direct Publisher
+       └──► Production B (e.g. "Single Highlight") ──► Deterministic Render (9:16 Video)
 ```
 
 1. **Clips are Reusable Assets, Not Final Videos**:
@@ -46,7 +46,7 @@ Source Video (YouTube / Local MP4)
 
 | Route | View | Description |
 |---|---|---|
-| `/` | **Studio Dashboard** | System overview, pipeline status, storage stats, and quick workflows. |
+| `/` | **Studio Dashboard** | Telemetry overview, pipeline status, storage stats, and quick workflows. |
 | `/sources` | **Source Videos** | Ingest YouTube URLs or upload local MP4s; monitor transcription & analysis progress; view transcripts. |
 | `/sources/[id]` | **Source Inspector** | Full source playback with interactive, click-to-seek transcript viewer. |
 | `/clips` | **Clips Asset Library** | Primary hub: search, filter (Favorites, New, Edited, Used), bulk actions, 9:16 preview modal. |
@@ -54,8 +54,7 @@ Source Video (YouTube / Local MP4)
 | `/productions` | **Productions Hub** | Manage draft and rendered short compositions, duration constraints, and template configurations. |
 | `/productions/new` | **New Production** | Initialize Short from selected clips; choose template (`Ranking` vs `Single Title`) & layout. |
 | `/productions/[id]` | **Production Studio** | Clip sequencer (`[▲]` / `[▼]`), per-clip trim overrides, AI YouTube Metadata Assistant, "Render Short" trigger. |
-| `/renders` | **Renders Gallery** | Output library of deterministic MP4s, 9:16 video player modal, download buttons. |
-| `/publishing` | **YouTube Publisher** | Multi-channel OAuth2 management and direct YouTube Shorts publishing. |
+| `/renders` | **Renders Gallery** | Output library of deterministic MP4s, 9:16 video player modal, and local export/download. |
 
 ---
 

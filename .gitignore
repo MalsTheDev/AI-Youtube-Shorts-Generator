@@ -1,17 +1,23 @@
 .env
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
 output/
 *.mp4
+*.mkv
+*.webm
+*.mov
 .DS_Store
 
 # Node / Next.js
 node_modules/
+frontend/node_modules/
 frontend/.next/
 frontend/out/
 frontend/.env.local
+*.tsbuildinfo
 .npm/
 
 # Python artifacts
@@ -19,6 +25,11 @@ frontend/.env.local
 dist/
 build/
 .pytest_cache/
+
+# Logs & temp files
+*.log
+celerybeat-schedule
+celerybeat.pid
 
 # OS / Editor
 Thumbs.db

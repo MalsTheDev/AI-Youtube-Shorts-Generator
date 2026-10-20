@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import Navbar from "@/components/Navbar";
+import DashboardLayout from "@/components/DashboardLayout";
 
 export const metadata: Metadata = {
   title: "AI YouTube Shorts Generator - Viral Ranking Studio",
@@ -14,12 +14,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <body className="antialiased selection:bg-indigo-500 selection:text-white min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-        <Navbar />
-        <main className="flex-1">
+      <body className="antialiased selection:bg-zinc-800 selection:text-white min-h-screen bg-zinc-950 text-zinc-100">
+        <DashboardLayout>
           {children}
-        </main>
+        </DashboardLayout>
       </body>
     </html>
   );
 }
+

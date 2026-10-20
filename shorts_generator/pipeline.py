@@ -30,8 +30,13 @@ def _run_local(
     from .local.llm import call_local_llm
     from .local.transcriber import transcribe_local
 
+    on_progress = kwargs.get("on_progress")
+    if on_progress:
+        on_progress("downloading", "Downloading source video with yt-dlp...")
     source_path = download_youtube_local(youtube_url, fmt=download_format)
 
+    if on_progress:
+        on_progress("transcribing", "Transcribing audio with faster-whisper...")
     transcript = transcribe_local(source_path, language=language)
     if not transcript["segments"]:
         raise RuntimeError(
@@ -61,6 +66,8 @@ def _run_local(
             print(f"[pipeline/local] could not read highlights cache: {e}", flush=True)
 
     if not highlights_result:
+        if on_progress:
+            on_progress("analyzing", "Analyzing viral moments with AI LLM...")
         highlights_result = get_highlights(transcript, num_clips=num_clips, llm_fn=call_local_llm, user_prompt=user_prompt)
         all_highlights: List[Dict] = highlights_result.get("highlights", [])
         if not all_highlights:
@@ -109,15 +116,23 @@ def _run_api(
     download_format: str,
     language: Optional[str],
     user_prompt: Optional[str] = None,
+    **kwargs,
 ) -> Dict:
+    on_progress = kwargs.get("on_progress")
+    if on_progress:
+        on_progress("downloading", "Downloading source video...")
     source_url = download_youtube(youtube_url, fmt=download_format)
 
+    if on_progress:
+        on_progress("transcribing", "Transcribing audio with Whisper API...")
     transcript = transcribe(source_url, language=language)
     if not transcript["segments"]:
         raise RuntimeError(
             "Whisper produced no segments. The video may have no detectable speech."
         )
 
+    if on_progress:
+        on_progress("analyzing", "Analyzing moments with MuAPI LLM...")
     highlights_result = get_highlights(transcript, num_clips=num_clips, llm_fn=call_muapi_llm, user_prompt=user_prompt)
     all_highlights: List[Dict] = highlights_result.get("highlights", [])
     if not all_highlights:

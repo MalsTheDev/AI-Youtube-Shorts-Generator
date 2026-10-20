@@ -332,13 +332,13 @@ export default function ClipsPage() {
                 }`}
               >
                 {/* 16:10 Thumbnail Header */}
-                <div className="relative aspect-[16/10] bg-zinc-950 overflow-hidden shrink-0 flex items-center justify-center border-b border-zinc-800">
+                <div className="relative aspect-[16/10] bg-zinc-950 overflow-hidden shrink-0 border-b border-zinc-800 group/thumb">
                   {/* Actual Thumbnail Image with on-demand fallback */}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={clip.thumbnail_url || `/api/clips/${clip.id}/thumbnail`}
                     alt={clip.title}
-                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                    className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                     loading="lazy"
                     onError={(e) => {
                       (e.target as HTMLElement).style.display = "none";
@@ -355,7 +355,7 @@ export default function ClipsPage() {
                       e.stopPropagation();
                       toggleSelectClip(clip.id);
                     }}
-                    className="absolute top-2 left-2 z-10 p-1 rounded-md bg-zinc-950/80 text-white backdrop-blur-sm transition"
+                    className="absolute top-2 left-2 z-20 p-1 rounded-md bg-zinc-950/80 text-white backdrop-blur-sm transition hover:bg-zinc-800"
                   >
                     {isSelected ? (
                       <CheckSquare className="w-3.5 h-3.5 text-zinc-100 fill-zinc-800" />
@@ -368,7 +368,7 @@ export default function ClipsPage() {
                   <button
                     type="button"
                     onClick={(e) => toggleFavorite(clip, e)}
-                    className="absolute top-2 right-2 z-10 p-1 rounded-md bg-zinc-950/80 text-zinc-400 hover:text-amber-400 backdrop-blur-sm transition"
+                    className="absolute top-2 right-2 z-20 p-1 rounded-md bg-zinc-950/80 text-zinc-400 hover:text-amber-400 backdrop-blur-sm transition"
                   >
                     <Star
                       className={`w-3.5 h-3.5 ${
@@ -379,26 +379,27 @@ export default function ClipsPage() {
                     />
                   </button>
 
-                  {/* Play preview button */}
+                  {/* Play preview button - centered and clearly visible */}
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setPreviewClip(clip);
                     }}
-                    className="relative z-10 p-2.5 rounded-full bg-zinc-900/90 hover:bg-zinc-800 text-white shadow-md border border-zinc-700 opacity-80 group-hover:opacity-100 group-hover:scale-110 transition"
+                    className="absolute inset-0 m-auto z-20 w-11 h-11 rounded-full bg-zinc-950/80 hover:bg-zinc-900 text-white shadow-xl border border-zinc-700/80 flex items-center justify-center opacity-90 group-hover:opacity-100 group-hover:scale-110 active:scale-95 transition"
+                    title="Quick Preview Clip"
                   >
-                    <Play className="w-3.5 h-3.5 fill-current translate-x-0.5" />
+                    <Play className="w-4 h-4 fill-current translate-x-0.5 text-zinc-100" />
                   </button>
 
                   {/* Virality score badge */}
-                  <div className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded bg-zinc-950/90 text-[10px] font-bold text-zinc-200 border border-zinc-800 flex items-center gap-1 font-mono">
+                  <div className="absolute bottom-2 left-2 z-20 px-1.5 py-0.5 rounded bg-zinc-950/90 text-[10px] font-bold text-zinc-200 border border-zinc-800 flex items-center gap-1 font-mono">
                     <Flame className="w-2.5 h-2.5 text-amber-400 fill-amber-400" />
                     <span>{clip.ai_score || clip.virality_score}</span>
                   </div>
 
                   {/* Duration badge */}
-                  <div className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-zinc-950/90 text-[10px] font-mono text-zinc-300 border border-zinc-800">
+                  <div className="absolute bottom-2 right-2 z-20 px-1.5 py-0.5 rounded bg-zinc-950/90 text-[10px] font-mono text-zinc-300 border border-zinc-800">
                     {clip.duration}s
                   </div>
                 </div>

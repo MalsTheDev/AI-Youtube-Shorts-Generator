@@ -27,17 +27,30 @@ import {
   ExternalLink,
   X,
   Search,
+  Edit3,
+  ArrowDownUp,
 } from "lucide-react";
 
 interface ProductionClipItem {
-  id: string;
+  id?: string;
+  production_clip_id?: string;
   clip_id: string;
-  sequence_index: number;
+  sequence_index?: number;
+  position?: number;
   custom_start?: number;
   custom_end?: number;
   custom_title?: string;
+  start_time?: number;
+  end_time?: number;
+  start_override?: number;
+  end_override?: number;
   duration: number;
-  clip: {
+  title?: string;
+  emoji?: string;
+  category?: string;
+  thumbnail_url?: string;
+  source_stream_url?: string;
+  clip?: {
     id: string;
     title: string;
     start_time: number;
@@ -46,6 +59,7 @@ interface ProductionClipItem {
     category?: string;
     character?: string;
     source_stream_url?: string;
+    thumbnail_url?: string;
     ai_score?: number;
   };
 }
@@ -58,6 +72,8 @@ interface ProductionData {
   aspect_ratio: string;
   layout_mode: string;
   transition_type: string;
+  countdown_order?: boolean;
+  font_family?: string;
   channel_handle?: string;
   caption_settings?: any;
   youtube_title?: string;
@@ -88,8 +104,13 @@ export default function ProductionStudioPage() {
   const [template, setTemplate] = useState("ranking");
   const [layoutMode, setLayoutMode] = useState("1:1");
   const [transitionType, setTransitionType] = useState("swoosh");
+  const [countdownOrder, setCountdownOrder] = useState(true);
+  const [fontFamily, setFontFamily] = useState("anton");
+  const [channelHandle, setChannelHandle] = useState("");
   const [captionAnimation, setCaptionAnimation] = useState("karaoke");
   const [captionColor, setCaptionColor] = useState("&H00FFFF&");
+  const [captionFont, setCaptionFont] = useState("dejavu");
+  const [captionSize, setCaptionSize] = useState("54");
   const [clips, setClips] = useState<ProductionClipItem[]>([]);
 
   // YouTube Metadata state
@@ -102,6 +123,7 @@ export default function ProductionStudioPage() {
   const [repoClips, setRepoClips] = useState<any[]>([]);
   const [repoLoading, setRepoLoading] = useState(false);
   const [repoSearch, setRepoSearch] = useState("");
+  const [previewClip, setPreviewClip] = useState<ProductionClipItem | null>(null);
 
   const fetchProduction = useCallback(async () => {
     try {
@@ -114,6 +136,19 @@ export default function ProductionStudioPage() {
       setTemplate(data.template || "ranking");
       setLayoutMode(data.layout_mode || "1:1");
       setTransitionType(data.transition_type || "swoosh");
+      setCountdownOrder(data.countdown_order !== undefined ? Boolean(data.countdown_order) : true);
+      setFontFamily(data.font_family || "anton");
+      setChannelHandle(data.channel_handle || "");
+      if (data.caption_settings) {
+        if (data.caption_settings.animation) setCaptionAnimation(data.caption_settings.animation);
+        if (data.caption_settings.primary_color) setCaptionColor(data.caption_settings.primary_color);
+        if (data.caption_settings.font || data.caption_settings.caption_font) {
+          setCaptionFont(data.caption_settings.font || data.caption_settings.caption_font);
+        }
+        if (data.caption_settings.size || data.caption_settings.caption_size) {
+          setCaptionSize(data.caption_settings.size || data.caption_settings.caption_size);
+        }
+      }
       setClips(data.clips || []);
 
       setYtTitle(data.youtube_title || "");
@@ -163,9 +198,15 @@ export default function ProductionStudioPage() {
           template,
           layout_mode: layoutMode,
           transition_type: transitionType,
+          countdown_order: countdownOrder,
+          font_family: fontFamily,
+          channel_handle: channelHandle.trim(),
           caption_settings: {
             animation: captionAnimation,
             primary_color: captionColor,
+            font: captionFont,
+            size: captionSize,
+            captions_enabled: captionAnimation !== "none",
           },
           youtube_title: ytTitle,
           youtube_description: ytDescription,
@@ -470,17 +511,31 @@ export default function ProductionStudioPage() {
                   <span>Clip Sequence & Ordering</span>
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Order clips chronologically. Ranking template counts down from #{clips.length} to #1!
+                  {countdownOrder
+                    ? `Clips play in reverse countdown order from #${clips.length} down to #1.`
+                    : `Clips play in ascending ranking order from #1 up to #${clips.length}.`}
                 </p>
               </div>
 
-              <button
-                onClick={openAddModal}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 text-xs font-bold border border-indigo-500/30 transition"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Clips</span>
-              </button>
+              <div className="flex items-center gap-2">
+                {clips.length > 1 && (
+                  <button
+                    onClick={() => setClips([...clips].reverse())}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold border border-slate-700/80 transition"
+                    title="Reverse sequence order of clips"
+                  >
+                    <ArrowDownUp className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Flip Order</span>
+                  </button>
+                )}
+                <button
+                  onClick={openAddModal}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 text-xs font-bold border border-indigo-500/30 transition"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Clips</span>
+                </button>
+              </div>
             </div>
 
             {/* Clips Sequence List */}
@@ -498,7 +553,7 @@ export default function ProductionStudioPage() {
             ) : (
               <div className="space-y-3">
                 {clips.map((item, idx) => {
-                  const rankNumber = template === "ranking" ? clips.length - idx : idx + 1;
+                  const rankNumber = countdownOrder ? clips.length - idx : idx + 1;
                   const itemDur =
                     item.custom_start !== undefined && item.custom_end !== undefined
                       ? (item.custom_end - item.custom_start).toFixed(1)
@@ -515,10 +570,31 @@ export default function ProductionStudioPage() {
                           #{rankNumber}
                         </div>
 
+                        {/* Thumbnail with Play preview button */}
+                        <div className="relative w-16 h-12 rounded-xl bg-zinc-950 overflow-hidden shrink-0 border border-zinc-800 group/thumb">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={item.thumbnail_url || item.clip?.thumbnail_url || `/api/clips/${item.clip_id}/thumbnail`}
+                            alt={item.title || item.custom_title || item.clip?.title || "Thumbnail"}
+                            className="w-full h-full object-cover transition group-hover/thumb:scale-105"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = "none";
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setPreviewClip(item)}
+                            className="absolute inset-0 m-auto z-10 w-7 h-7 rounded-full bg-zinc-950/80 hover:bg-zinc-900 text-white shadow-md border border-zinc-700/80 flex items-center justify-center transition hover:scale-110 active:scale-95"
+                            title="Preview Clip"
+                          >
+                            <Play className="w-3 h-3 fill-current translate-x-0.5 text-zinc-100" />
+                          </button>
+                        </div>
+
                         <div className="min-w-0 flex-1 space-y-1">
                           <input
                             type="text"
-                            value={item.custom_title || item.clip?.title || ""}
+                            value={item.custom_title || item.title || item.clip?.title || ""}
                             onChange={(e) => {
                               const updated = [...clips];
                               updated[idx].custom_title = e.target.value;
@@ -532,14 +608,23 @@ export default function ProductionStudioPage() {
                             <span>Duration: {itemDur}s</span>
                             <span>•</span>
                             <span className="text-slate-400">
-                              {item.clip?.category || "General"}
+                              {item.category || item.clip?.category || "General"}
                             </span>
                           </div>
                         </div>
                       </div>
 
-                      {/* Move Up/Down & Remove actions */}
-                      <div className="flex items-center gap-1 shrink-0">
+                      {/* Actions: Edit in Clip Editor, Move Up/Down, Remove */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <Link
+                          href={`/clips/edit?ids=${item.clip_id}&returnTo=/productions/${productionId}`}
+                          className="p-1.5 px-2.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white transition flex items-center gap-1.5 text-xs font-medium border border-zinc-700/60"
+                          title="Re-edit in Non-Destructive Clip Editor"
+                        >
+                          <Edit3 className="w-3.5 h-3.5 text-zinc-400" />
+                          <span className="hidden sm:inline">Edit</span>
+                        </Link>
+
                         <button
                           onClick={() => moveClip(idx, "up")}
                           disabled={idx === 0}
@@ -652,10 +737,55 @@ export default function ProductionStudioPage() {
                   onChange={(e) => setTransitionType(e.target.value)}
                   className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-200 focus:outline-none focus:border-indigo-500"
                 >
-                  <option value="swoosh">Swoosh Audio</option>
+                  <option value="swoosh">Swoosh Audio & Reveal</option>
+                  <option value="black_screen">Black Cut with core.mp3</option>
                   <option value="crossfade">Crossfade</option>
                   <option value="cut">Direct Cut</option>
                 </select>
+              </div>
+
+              {template === "ranking" && (
+                <div className="col-span-2">
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Rank Numbering Direction
+                  </label>
+                  <select
+                    value={countdownOrder ? "countdown" : "ascending"}
+                    onChange={(e) => setCountdownOrder(e.target.value === "countdown")}
+                    className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-200 focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="countdown">Countdown (#5 → #1, Reverse Order - Classic Viral)</option>
+                    <option value="ascending">Ascending (#1 → #5, Forward Order)</option>
+                  </select>
+                </div>
+              )}
+
+              <div className="col-span-2">
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Font & Typography Style
+                </label>
+                <select
+                  value={fontFamily}
+                  onChange={(e) => setFontFamily(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-200 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="anton">Meme / Bold Impact (Anton - Sheared Viral Style)</option>
+                  <option value="minimal">Minimal Sans (Inter - Clean Modern)</option>
+                </select>
+              </div>
+
+              <div className="col-span-2">
+                <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
+                  <span>Channel Tag / Watermark (@handle)</span>
+                  <span className="text-[10px] text-slate-500 font-normal">Shows at bottom of video</span>
+                </label>
+                <input
+                  type="text"
+                  value={channelHandle}
+                  onChange={(e) => setChannelHandle(e.target.value)}
+                  placeholder="@malshorts"
+                  className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
+                />
               </div>
             </div>
 
@@ -668,6 +798,36 @@ export default function ProductionStudioPage() {
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">Caption Font</label>
+                  <select
+                    value={captionFont}
+                    onChange={(e) => setCaptionFont(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 font-medium"
+                  >
+                    <option value="dejavu">Classic V1 Style (DejaVu Sans - From Screenshot)</option>
+                    <option value="anton">Meme Style (Anton - Bold Impact)</option>
+                    <option value="montserrat">Viral Heavy (Montserrat Black)</option>
+                    <option value="inter">Modern Clean (Inter Bold)</option>
+                    <option value="liberation">Standard Bold (Liberation Sans)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">Font Size</label>
+                  <select
+                    value={captionSize}
+                    onChange={(e) => setCaptionSize(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 font-medium"
+                  >
+                    <option value="54">V1 Classic (54pt - Exact Match)</option>
+                    <option value="60">Medium (60pt)</option>
+                    <option value="70">Large (70pt)</option>
+                    <option value="80">Extra Large (80pt)</option>
+                    <option value="46">Compact (46pt)</option>
+                  </select>
+                </div>
+
+                <div>
                   <label className="block text-[11px] text-slate-400 mb-1">Animation</label>
                   <select
                     value={captionAnimation}
@@ -677,6 +837,7 @@ export default function ProductionStudioPage() {
                     <option value="karaoke">Karaoke Word Highlight</option>
                     <option value="pop">Pop-in Word</option>
                     <option value="clean">Static Subtitles</option>
+                    <option value="none">Disabled (No Subtitles)</option>
                   </select>
                 </div>
 
@@ -844,6 +1005,69 @@ export default function ProductionStudioPage() {
           </div>
         </div>
       )}
+
+      {/* Video Preview Modal */}
+      {previewClip && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl max-w-sm w-full overflow-hidden shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-zinc-100 truncate flex-1 pr-2">
+                {previewClip.emoji || previewClip.clip?.emoji || "🎬"} {previewClip.custom_title || previewClip.title || previewClip.clip?.title}
+              </h3>
+              <button
+                onClick={() => setPreviewClip(null)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Video Player */}
+            <div className="relative aspect-[9/16] bg-black flex items-center justify-center">
+              {previewClip.source_stream_url || previewClip.clip?.source_stream_url ? (
+                <video
+                  src={previewClip.source_stream_url || previewClip.clip?.source_stream_url}
+                  controls
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-contain"
+                  onLoadedMetadata={(e) => {
+                    const vid = e.currentTarget;
+                    const startT = previewClip.start_override ?? previewClip.custom_start ?? previewClip.start_time ?? previewClip.clip?.start_time ?? 0;
+                    vid.currentTime = startT;
+                  }}
+                  onTimeUpdate={(e) => {
+                    const vid = e.currentTarget;
+                    const startT = previewClip.start_override ?? previewClip.custom_start ?? previewClip.start_time ?? previewClip.clip?.start_time ?? 0;
+                    const endT = previewClip.end_override ?? previewClip.custom_end ?? previewClip.end_time ?? previewClip.clip?.end_time ?? vid.duration;
+                    if (vid.currentTime >= endT) {
+                      vid.currentTime = startT;
+                    }
+                  }}
+                />
+              ) : (
+                <span className="text-xs text-zinc-500">Video stream not available</span>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-3 border-t border-zinc-800 flex items-center justify-between bg-zinc-950">
+              <span className="text-xs font-mono text-zinc-400">
+                {(previewClip.duration || 0).toFixed(1)}s ({formatDuration(previewClip.start_override ?? previewClip.start_time ?? 0)} - {formatDuration(previewClip.end_override ?? previewClip.end_time ?? 0)})
+              </span>
+              <Link
+                href={`/clips/edit?ids=${previewClip.clip_id}&returnTo=/productions/${productionId}`}
+                className="px-3 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-900 font-semibold text-xs transition flex items-center gap-1.5 shadow-sm"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                <span>Re-edit in Clip Editor</span>
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

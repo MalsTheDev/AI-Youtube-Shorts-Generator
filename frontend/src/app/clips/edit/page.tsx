@@ -47,6 +47,7 @@ interface ClipDetails {
 function ClipEditorContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const returnTo = searchParams.get("returnTo");
 
   const idsParam = searchParams.get("ids") || "";
   const clipIds = idsParam
@@ -244,8 +245,9 @@ function ClipEditorContent() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Link
-            href="/clips"
+            href={returnTo || "/clips"}
             className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition"
+            title={returnTo ? "Back to Production" : "Back to Clips Library"}
           >
             <ArrowLeft className="w-4 h-4" />
           </Link>

@@ -1,25 +1,16 @@
-"""FastAPI Backend Server for Asynchronous Batch Video Processing.
+"""FastAPI Backend Server for AI YouTube Shorts Studio V2.
 
-Provides:
-- POST /api/jobs/batch: Submit a batch of YouTube URLs for shorts processing
-- GET /api/jobs: List all jobs
-- GET /api/jobs/{id}: Get specific job status and result
-- POST /api/jobs/{id}/render: Re-render short with custom cuts and title
-- POST /api/jobs/{id}/reanalyze: Fast in-studio AI highlight re-analysis
-- DELETE /api/jobs/{id}: Delete a job
-- POST /api/jobs/clear: Clear job history
-- GET /api/videos: List all processed YouTube videos with their extracted clips
-- GET /api/clips: Retrieve all extracted clips grouped by YouTube video title
-- POST /api/shorts/custom-build: Create a new edit job by combining an arbitrary selection of clip IDs
-- GET /api/channels: List configured YouTube channels
-- POST /api/channels: Add/authenticate a new YouTube channel
-- GET /api/shorts: List rendered shorts
-- POST /api/shorts/batch-upload: Trigger automated uploads via google-api-python-client
-- Static mount /output: Direct streaming of generated MP4 clips with HTTP Range support
+Core Endpoints:
+- Sources: Ingest YouTube URLs or local video files, track background transcription and highlight extraction.
+- Clips: Query, filter, and non-destructively edit extracted clip highlights.
+- Productions: Sequence multi-clip timelines, adjust layouts, and configure caption typography.
+- Renders: Deterministic SHA-256 cached rendering engine for 9:16 Shorts delivery.
+- Static mount /output: Streaming of generated MP4 clips with HTTP 206 Range support.
 """
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -57,7 +48,6 @@ from database import (
     Video,
     ClipCandidate,
     RenderedShort,
-    YouTubeChannel,
     Clip,
     Transcript,
     TranscriptSegment,
@@ -290,6 +280,7 @@ def _save_video_and_clips_to_db(job: Dict[str, Any], result: Dict[str, Any]):
                 category=job_category,
                 source_path=src_url,
                 transcript_path=t_path if (t_path and os.path.exists(t_path)) else None,
+                user_prompt=job.get("user_prompt"),
                 status="completed",
                 current_stage="completed",
                 progress="Clips discovered",
@@ -304,6 +295,8 @@ def _save_video_and_clips_to_db(job: Dict[str, Any], result: Dict[str, Any]):
                 v.source_path = result.get("source_video_url")
             if job_category and (not v.category or v.category == "General"):
                 v.category = job_category
+            if job.get("user_prompt"):
+                v.user_prompt = job.get("user_prompt")
             v.status = "completed"
             v.current_stage = "completed"
             v.progress = "Clips discovered"
@@ -441,13 +434,61 @@ def _save_video_and_clips_to_db(job: Dict[str, Any], result: Dict[str, Any]):
         db.close()
 
 
+def _update_source_status(
+    source_id: str,
+    status: str,
+    stage: Optional[str] = None,
+    progress: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    """Synchronize source video status, stage, and progress across jobs_db and MySQL."""
+    # 1. Update in-memory / disk jobs_db
+    job = jobs_db.get(source_id)
+    if job:
+        job["status"] = status
+        if stage is not None:
+            job["stage"] = stage
+            job["current_stage"] = stage
+        if progress is not None:
+            job["progress"] = progress
+        if error is not None:
+            job["error"] = error
+        _save_jobs_to_disk()
+
+    # 2. Update MySQL Video record
+    db = SessionLocal()
+    try:
+        v = db.query(Video).filter(Video.id == source_id).first()
+        if v:
+            v.status = status
+            if stage is not None:
+                v.current_stage = stage
+            if progress is not None:
+                v.progress = progress
+            if error is not None:
+                v.error_message = error
+            if status == "completed":
+                v.completed_at = datetime.utcnow()
+            db.commit()
+    except Exception as e:
+        print(f"[db] Warning syncing video status for {source_id}: {e}", flush=True)
+    finally:
+        db.close()
+
+
 def _process_job_sync(job: Dict[str, Any]) -> Dict[str, Any]:
     job_id = job["id"]
     job_out_dir = os.path.join(OUTPUT_DIR, f"job_{job_id}")
     os.makedirs(job_out_dir, exist_ok=True)
 
     print(f"[worker] Starting discovery for job {job_id} for URL: {job['url']}", flush=True)
+    _update_source_status(job_id, status="processing", stage="downloading", progress="Downloading source video with yt-dlp...")
     num_clips = job.get("num_clips", 10)
+
+    def _progress_cb(stage: str, msg: str):
+        print(f"[job {job_id}] {stage}: {msg}", flush=True)
+        _update_source_status(job_id, status="processing", stage=stage, progress=msg)
+
     result = generate_shorts(
         youtube_url=job["url"],
         num_clips=num_clips,
@@ -456,6 +497,7 @@ def _process_job_sync(job: Dict[str, Any]) -> Dict[str, Any]:
         mode=job.get("mode", "local"),
         out_dir=job_out_dir,
         user_prompt=job.get("user_prompt"),
+        on_progress=_progress_cb,
     )
     result = _normalize_stream_urls(result, job_out_dir)
 
@@ -465,6 +507,7 @@ def _process_job_sync(job: Dict[str, Any]) -> Dict[str, Any]:
 
     # Persist to MySQL (Video, ClipCandidate, Clip, Transcript, TranscriptSegment)
     _save_video_and_clips_to_db(job, result)
+    _update_source_status(job_id, status="completed", stage="completed", progress="Clips discovered and ready")
 
     print(f"[worker] Completed discovery for job {job_id}. Discovered {len(candidates)} reusable clips.", flush=True)
     return result
@@ -484,9 +527,11 @@ def process_video_task(self, job_id: str, job_data: Optional[Dict[str, Any]] = N
         return {"error": f"Job {job_id} not found"}
 
     job["status"] = "processing"
-    job["progress"] = "Processing video highlights and cropping..."
+    job["progress"] = "Downloading source video..."
+    job["stage"] = "downloading"
     job["started_at"] = datetime.now(timezone.utc).isoformat()
     _save_job_update(job_id, job)
+    _update_source_status(job_id, status="processing", stage="downloading", progress="Downloading source video...")
 
     try:
         result = _process_job_sync(job)
@@ -496,14 +541,16 @@ def process_video_task(self, job_id: str, job_data: Optional[Dict[str, Any]] = N
         job["result"] = result
         job["error"] = None
         _save_job_update(job_id, job)
+        _update_source_status(job_id, status="completed", stage="completed", progress="Clips discovered and ready")
         return {"status": "success", "job_id": job_id}
     except Exception as exc:
         print(f"[celery] Job {job_id} failed: {exc}", flush=True)
         job["status"] = "failed"
-        job["progress"] = "Failed during processing."
+        job["progress"] = f"Failed: {exc}"
         job["completed_at"] = datetime.now(timezone.utc).isoformat()
         job["error"] = str(exc)
         _save_job_update(job_id, job)
+        _update_source_status(job_id, status="failed", stage="failed", progress=f"Failed: {exc}", error=str(exc))
         raise exc
 
 
@@ -519,9 +566,11 @@ async def background_worker():
                     job_queue.task_done()
                     continue
                 job["status"] = "processing"
-                job["progress"] = "Processing video highlights and cropping..."
+                job["progress"] = "Downloading source video..."
+                job["stage"] = "downloading"
                 job["started_at"] = datetime.now(timezone.utc).isoformat()
                 _save_jobs_to_disk()
+                _update_source_status(job_id, status="processing", stage="downloading", progress="Downloading source video...")
 
             loop = asyncio.get_running_loop()
             try:
@@ -533,14 +582,16 @@ async def background_worker():
                     job["result"] = result
                     job["error"] = None
                     _save_jobs_to_disk()
+                    _update_source_status(job_id, status="completed", stage="completed", progress="Clips discovered and ready")
             except Exception as exc:
                 print(f"[worker] Job {job_id} failed: {exc}", flush=True)
                 async with jobs_lock:
                     job["status"] = "failed"
-                    job["progress"] = "Failed during processing."
+                    job["progress"] = f"Failed: {exc}"
                     job["completed_at"] = datetime.now(timezone.utc).isoformat()
                     job["error"] = str(exc)
                     _save_jobs_to_disk()
+                    _update_source_status(job_id, status="failed", stage="failed", progress=f"Failed: {exc}", error=str(exc))
             finally:
                 job_queue.task_done()
         except asyncio.CancelledError:
@@ -706,24 +757,6 @@ class AssembleClipsRequest(BaseModel):
     transition_type: Optional[str] = Field("swoosh", description="Transition style: 'swoosh' or 'black_screen'")
 
 
-class ChannelCreateRequest(BaseModel):
-    channel_name: str = Field(..., min_length=1, description="Channel display name")
-    credentials_json_path: str = Field(..., min_length=1, description="Path to OAuth JSON credentials")
-
-
-class BatchUploadItem(BaseModel):
-    short_id: str
-    channel_id: str
-    title: str
-    description: Optional[str] = ""
-    tags: Optional[List[str]] = None
-    privacy_status: Optional[str] = "public"
-
-
-class BatchUploadRequest(BaseModel):
-    uploads: List[BatchUploadItem]
-
-
 # V2 Request Models
 class SourceCreateRequest(BaseModel):
     urls: Optional[List[str]] = None
@@ -816,6 +849,8 @@ class ProductionCreateRequest(BaseModel):
     max_duration: Optional[float] = 60.0
     channel_handle: Optional[str] = None
     transition_type: Optional[str] = "swoosh"
+    countdown_order: Optional[bool] = False
+    font_family: Optional[str] = "minimal"
 
 
 class ProductionPatchRequest(BaseModel):
@@ -830,6 +865,8 @@ class ProductionPatchRequest(BaseModel):
     caption_settings: Optional[Dict[str, Any]] = None
     max_duration: Optional[float] = None
     transition_type: Optional[str] = None
+    countdown_order: Optional[bool] = None
+    font_family: Optional[str] = None
     channel_handle: Optional[str] = None
     clips: Optional[List[ProductionClipInput]] = None
 
@@ -992,6 +1029,25 @@ def list_sources():
             if not thumb:
                 thumb = f"/api/sources/{s.id}/thumbnail"
 
+            job = jobs_db.get(s.id)
+            current_status = s.status or "completed"
+            current_stage = s.current_stage or current_status
+            progress = s.progress or "Ready"
+            error_message = s.error_message
+
+            if job:
+                j_status = job.get("status")
+                if j_status:
+                    current_status = j_status
+                if job.get("stage"):
+                    current_stage = job.get("stage")
+                elif job.get("current_stage"):
+                    current_stage = job.get("current_stage")
+                if job.get("progress"):
+                    progress = job.get("progress")
+                if job.get("error"):
+                    error_message = job.get("error")
+
             result.append({
                 "id": s.id,
                 "youtube_url": s.youtube_url,
@@ -1002,13 +1058,14 @@ def list_sources():
                 "source_path": s.source_path,
                 "stream_url": stream_url,
                 "thumbnail_url": thumb,
-                "status": s.status or "completed",
-                "current_stage": s.current_stage or "completed",
-                "progress": s.progress or "Ready",
+                "status": current_status,
+                "current_stage": current_stage,
+                "progress": progress,
                 "started_at": s.started_at.isoformat() if s.started_at else None,
                 "completed_at": s.completed_at.isoformat() if s.completed_at else None,
-                "error_message": s.error_message,
+                "error_message": error_message,
                 "clips_count": clips_count,
+                "user_prompt": s.user_prompt or (job.get("user_prompt") if job else None),
                 "created_at": s.created_at.isoformat() if s.created_at else None,
             })
         return result
@@ -1033,11 +1090,13 @@ async def create_sources(request: SourceCreateRequest):
         raw_urls.append(request.youtube_url)
 
     urls_to_process = []
+    seen = set()
     for u in raw_urls:
         if isinstance(u, str):
             for part in u.split("\n"):
                 part = part.strip()
-                if part:
+                if part and part not in seen:
+                    seen.add(part)
                     urls_to_process.append(part)
 
     if not urls_to_process:
@@ -1062,17 +1121,32 @@ async def create_sources(request: SourceCreateRequest):
             if not existing:
                 existing = db.query(Video).filter(Video.youtube_url == cleaned_url).first()
 
-            if existing and existing.status == "completed":
-                clips_count = db.query(Clip).filter(Clip.source_id == existing.id).count()
-                if clips_count > 0:
+            if existing:
+                # If already queued or processing, avoid creating duplicate
+                if existing.status in ("queued", "processing", "downloading", "transcribing", "analyzing"):
                     created_sources.append({
                         "id": existing.id,
                         "title": existing.title,
-                        "status": "completed",
-                        "message": "Reusing existing source",
-                        "clips_count": clips_count,
+                        "status": existing.status,
+                        "message": "Source is already being processed",
+                        "clips_count": 0,
                     })
                     continue
+
+                if existing.status == "completed":
+                    requested_prompt = request.user_prompt.strip() if request.user_prompt else None
+                    # Only reuse existing source if no custom prompt was specified OR if the prompt matches
+                    if not requested_prompt or (existing.user_prompt and existing.user_prompt.strip() == requested_prompt):
+                        clips_count = db.query(Clip).filter(Clip.source_id == existing.id).count()
+                        if clips_count > 0:
+                            created_sources.append({
+                                "id": existing.id,
+                                "title": existing.title,
+                                "status": "completed",
+                                "message": "Reusing existing source",
+                                "clips_count": clips_count,
+                            })
+                            continue
 
             src_id = f"job_{uuid.uuid4().hex[:8]}"
             source_rec = Video(
@@ -1081,6 +1155,7 @@ async def create_sources(request: SourceCreateRequest):
                 youtube_video_id=yid,
                 title=f"Source ({yid or src_id[:8]})",
                 category=category,
+                user_prompt=request.user_prompt.strip() if request.user_prompt else None,
                 status="queued",
                 current_stage="queued",
                 progress="Queued for AI clip discovery...",
@@ -1158,6 +1233,7 @@ def get_source_detail(source_id: str):
                 "stream_url": job.get("source_stream_url"),
                 "thumbnail_url": None,
                 "has_transcript": False,
+                "user_prompt": job.get("user_prompt"),
             }
 
         clips = db.query(Clip).filter(Clip.source_id == s.id, Clip.is_archived == False).all()
@@ -1169,6 +1245,25 @@ def get_source_detail(source_id: str):
         if not thumb:
             thumb = f"/api/sources/{s.id}/thumbnail"
 
+        job = jobs_db.get(s.id)
+        current_status = s.status or "completed"
+        current_stage = s.current_stage or current_status
+        progress = s.progress or "Ready"
+        error_message = s.error_message
+
+        if job:
+            j_status = job.get("status")
+            if j_status:
+                current_status = j_status
+            if job.get("stage"):
+                current_stage = job.get("stage")
+            elif job.get("current_stage"):
+                current_stage = job.get("current_stage")
+            if job.get("progress"):
+                progress = job.get("progress")
+            if job.get("error"):
+                error_message = job.get("error")
+
         return {
             "id": s.id,
             "youtube_url": s.youtube_url,
@@ -1179,14 +1274,15 @@ def get_source_detail(source_id: str):
             "source_path": s.source_path,
             "stream_url": to_stream_url(s.source_path),
             "thumbnail_url": thumb,
-            "status": s.status or "completed",
-            "current_stage": s.current_stage or "completed",
-            "progress": s.progress or "Ready",
+            "status": current_status,
+            "current_stage": current_stage,
+            "progress": progress,
             "started_at": s.started_at.isoformat() if s.started_at else None,
             "completed_at": s.completed_at.isoformat() if s.completed_at else None,
-            "error_message": s.error_message,
+            "error_message": error_message,
             "clips_count": len(clips),
             "has_transcript": has_transcript,
+            "user_prompt": s.user_prompt or (job.get("user_prompt") if job else None),
             "created_at": s.created_at.isoformat() if s.created_at else None,
         }
     finally:
@@ -1306,6 +1402,384 @@ def cancel_source(source_id: str):
         db.close()
 
 
+def _auto_transcribe_audio_slice(
+    db,
+    src: Video,
+    clip_start: float,
+    clip_end: float,
+) -> Optional[Dict[str, Any]]:
+    """Extract audio slice and transcribe using local Whisper, saving segments to MySQL Transcript."""
+    if not src or not src.source_path or not os.path.exists(src.source_path):
+        return None
+
+    try:
+        actual_start = max(0.0, float(clip_start) - 0.2)
+        actual_end = float(clip_end) + 0.2
+        duration = actual_end - actual_start
+        if duration <= 0:
+            return None
+
+        temp_wav = os.path.join(OUTPUT_DIR, f"temp_slice_{uuid.uuid4().hex[:8]}.wav")
+        cmd = [
+            "ffmpeg", "-y", "-ss", f"{actual_start:.3f}", "-to", f"{actual_end:.3f}",
+            "-i", src.source_path,
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            temp_wav,
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        try:
+            whisper_res = transcribe_local(temp_wav)
+        finally:
+            if os.path.exists(temp_wav):
+                try:
+                    os.remove(temp_wav)
+                except OSError:
+                    pass
+
+        raw_segs = whisper_res.get("segments", [])
+        if not raw_segs:
+            return None
+
+        offset_segs = []
+        for s in raw_segs:
+            s_start = round(float(s.get("start", 0.0)) + actual_start, 3)
+            s_end = round(float(s.get("end", 0.0)) + actual_start, 3)
+            raw_words = s.get("words", [])
+            offset_words = []
+            for w in raw_words:
+                w_start = round(float(w.get("start", 0.0)) + actual_start, 3)
+                w_end = round(float(w.get("end", 0.0)) + actual_start, 3)
+                offset_words.append({
+                    "word": w.get("word", ""),
+                    "start": w_start,
+                    "end": w_end,
+                    "probability": w.get("probability", 1.0),
+                })
+            offset_segs.append({
+                "start": s_start,
+                "end": s_end,
+                "start_time": s_start,
+                "end_time": s_end,
+                "text": s.get("text", "").strip(),
+                "words": offset_words,
+            })
+
+        tr = db.query(Transcript).filter(Transcript.source_id == src.id).first()
+        if not tr:
+            tr = Transcript(
+                id=f"trans_{uuid.uuid4().hex[:10]}",
+                source_id=src.id,
+                language=whisper_res.get("language", "en"),
+                model="whisper-base-slice",
+                version="1.0",
+                duration=float(src.duration or actual_end),
+            )
+            db.add(tr)
+            db.flush()
+
+        for seg_data in offset_segs:
+            # Check if this segment already exists to prevent duplicate rows
+            existing_seg = any(abs(s.start_time - seg_data["start"]) < 0.2 for s in tr.segments) if tr.segments else False
+            if not existing_seg:
+                seg_rec = TranscriptSegment(
+                    id=f"seg_{uuid.uuid4().hex[:12]}",
+                    transcript_id=tr.id,
+                    start_time=seg_data["start"],
+                    end_time=seg_data["end"],
+                    text=seg_data["text"],
+                    words_json=seg_data["words"],
+                )
+                db.add(seg_rec)
+
+        db.commit()
+        print(f"[transcript] Successfully auto-transcribed {len(offset_segs)} segments for clip [{clip_start}-{clip_end}s] in source {src.id}", flush=True)
+
+        return {
+            "language": tr.language or "en",
+            "duration": tr.duration,
+            "segments": offset_segs,
+        }
+    except Exception as e:
+        print(f"[transcript] Error auto-transcribing audio slice for {src.id}: {e}", flush=True)
+        return None
+
+
+def _auto_transcribe_full_source(db, src: Video) -> Optional[Dict[str, Any]]:
+    """Transcribe an entire source video file using local Whisper and persist to MySQL."""
+    if not src or not src.source_path or not os.path.exists(src.source_path):
+        return None
+    try:
+        whisper_res = transcribe_local(src.source_path)
+        raw_segs = whisper_res.get("segments", [])
+        if not raw_segs:
+            return None
+
+        tr = db.query(Transcript).filter(Transcript.source_id == src.id).first()
+        if not tr:
+            tr = Transcript(
+                id=f"trans_{uuid.uuid4().hex[:10]}",
+                source_id=src.id,
+                language=whisper_res.get("language", "en"),
+                model="whisper-base",
+                version="1.0",
+                duration=float(whisper_res.get("duration") or src.duration or 0.0),
+            )
+            db.add(tr)
+            db.flush()
+
+        for s in raw_segs:
+            seg_rec = TranscriptSegment(
+                id=f"seg_{uuid.uuid4().hex[:12]}",
+                transcript_id=tr.id,
+                start_time=float(s.get("start", 0.0)),
+                end_time=float(s.get("end", 0.0)),
+                text=s.get("text", "").strip(),
+                words_json=s.get("words", []),
+            )
+            db.add(seg_rec)
+
+        from shorts_generator.local.transcriber import _transcript_json_cache_path
+        cache_p = _transcript_json_cache_path(src.source_path)
+        if cache_p.exists():
+            src.transcript_path = str(cache_p)
+        src.status = "completed"
+
+        db.commit()
+        print(f"[transcript] Successfully auto-transcribed full source {src.id} ({len(raw_segs)} segments)", flush=True)
+
+        return {
+            "language": tr.language or "en",
+            "duration": tr.duration,
+            "segments": [
+                {
+                    "start": float(s.get("start", 0.0)),
+                    "end": float(s.get("end", 0.0)),
+                    "start_time": float(s.get("start", 0.0)),
+                    "end_time": float(s.get("end", 0.0)),
+                    "text": s.get("text", "").strip(),
+                    "words": s.get("words", []),
+                }
+                for s in raw_segs
+            ],
+        }
+    except Exception as e:
+        print(f"[transcript] Error auto-transcribing full source {src.id}: {e}", flush=True)
+        return None
+
+
+def _resolve_source_transcript(
+    db,
+    source_id: Optional[str],
+    src: Optional[Video] = None,
+    clip_start: Optional[float] = None,
+    clip_end: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve transcript with word-level timing from DB Transcript, disk cache, or auto-transcribe on the fly."""
+    if not source_id and src:
+        source_id = src.id
+    if not source_id:
+        return None
+
+    # 1. Query MySQL DB
+    try:
+        tr = db.query(Transcript).filter(Transcript.source_id == source_id).first()
+        if tr and tr.segments:
+            # If clip boundaries specified, verify if DB segments overlap with this clip
+            all_segs = [
+                {
+                    "start": seg.start_time,
+                    "end": seg.end_time,
+                    "start_time": seg.start_time,
+                    "end_time": seg.end_time,
+                    "text": seg.text or "",
+                    "words": seg.words_json if isinstance(seg.words_json, list) else (json.loads(seg.words_json) if seg.words_json else []),
+                }
+                for seg in tr.segments
+            ]
+            if clip_start is not None and clip_end is not None:
+                has_overlap = any(s["end"] > clip_start and s["start"] < clip_end for s in all_segs)
+                if has_overlap:
+                    return {
+                        "language": tr.language or "en",
+                        "duration": tr.duration or (src.duration if src else 0.0),
+                        "segments": all_segs,
+                    }
+                # If no overlap exists in DB for this specific slice, let auto-transcribe slice handle it below
+            else:
+                return {
+                    "language": tr.language or "en",
+                    "duration": tr.duration or (src.duration if src else 0.0),
+                    "segments": all_segs,
+                }
+    except Exception as e:
+        print(f"[transcript] DB lookup error for {source_id}: {e}", flush=True)
+
+    # 2. Check disk transcript_path on src
+    if src and src.transcript_path and os.path.exists(src.transcript_path):
+        try:
+            with open(src.transcript_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    # 3. Check jobs_db
+    if source_id in jobs_db:
+        job = jobs_db[source_id]
+        res = job.get("result") or {}
+        t = res.get("transcript") or job.get("transcript")
+        if t:
+            return t
+        tp = job.get("transcript_path")
+        if tp and os.path.exists(tp):
+            try:
+                with open(tp, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+
+    # 4. Fallback search by filename stem in OUTPUT_DIR
+    if src and src.source_path:
+        stem = Path(src.source_path).stem
+        cand = os.path.join(OUTPUT_DIR, f"{stem}.transcript.json")
+        if os.path.exists(cand):
+            try:
+                with open(cand, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+
+    # 5. AUTO-TRANSCRIBE ON THE FLY for manual MP4 clips / manual cuts without Whisper
+    target_src = src
+    if not target_src and source_id:
+        target_src = db.query(Video).filter(Video.id == source_id).first()
+
+    if target_src and target_src.source_path and os.path.exists(target_src.source_path):
+        if clip_start is not None and clip_end is not None and clip_end > clip_start:
+            print(f"[transcript] Auto-transcribing missing clip slice [{clip_start}-{clip_end}s] for source {target_src.id}...", flush=True)
+            return _auto_transcribe_audio_slice(db, target_src, clip_start, clip_end)
+        else:
+            print(f"[transcript] Auto-transcribing missing full source {target_src.id}...", flush=True)
+            return _auto_transcribe_full_source(db, target_src)
+
+    return None
+
+
+@app.post("/api/sources/{source_id}/rediscover")
+async def rediscover_source_clips(source_id: str, request: ReanalyzeJobRequest):
+    """Re-analyze an existing source video using a custom AI prompt (e.g. 'only stewie savage moments').
+    Reuses existing transcript to instantly discover and update clips without re-downloading.
+    """
+    clean_prompt = request.user_prompt.strip()
+    if not clean_prompt:
+        raise HTTPException(status_code=400, detail="Prompt directive cannot be empty.")
+
+    db = SessionLocal()
+    try:
+        s = db.query(Video).filter(Video.id == source_id).first()
+        transcript_data = None
+
+        # 1. Fetch transcript from DB
+        tr = db.query(Transcript).filter(Transcript.source_id == source_id).first()
+        if tr and tr.segments:
+            transcript_data = {
+                "language": tr.language or "en",
+                "duration": tr.duration or (s.duration if s else 0.0),
+                "segments": [
+                    {
+                        "start": seg.start_time,
+                        "end": seg.end_time,
+                        "start_time": seg.start_time,
+                        "end_time": seg.end_time,
+                        "text": seg.text,
+                        "words": seg.words_json or [],
+                    }
+                    for seg in tr.segments
+                ]
+            }
+
+        # 2. If not in DB, check source file or jobs_db
+        if not transcript_data and s and s.transcript_path and os.path.exists(s.transcript_path):
+            try:
+                with open(s.transcript_path, "r", encoding="utf-8") as f:
+                    transcript_data = json.load(f)
+            except Exception:
+                pass
+
+        if not transcript_data and source_id in jobs_db:
+            job = jobs_db[source_id]
+            res = job.get("result") or {}
+            transcript_data = res.get("transcript") or job.get("transcript")
+
+        if not transcript_data or not transcript_data.get("segments"):
+            raise HTTPException(
+                status_code=400,
+                detail="Source does not have an available transcript yet. Please wait for initial transcription to finish."
+            )
+
+        from shorts_generator.highlights import get_highlights, call_muapi_llm
+        from shorts_generator.local.llm import call_local_llm
+        from shorts_generator.config import MUAPI_API_KEY
+
+        llm_fn = call_local_llm if not MUAPI_API_KEY else call_muapi_llm
+        num_clips = request.num_clips or 10
+
+        try:
+            highlights_result = get_highlights(
+                transcript=transcript_data,
+                num_clips=num_clips,
+                llm_fn=llm_fn,
+                user_prompt=clean_prompt,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"AI clip discovery failed: {str(exc)}")
+
+        candidates = highlights_result.get("candidates", []) or highlights_result.get("highlights", [])
+        if not candidates:
+            raise HTTPException(status_code=500, detail="AI discovery returned no candidate clips.")
+
+        # Update Video record with new user_prompt
+        if s:
+            s.user_prompt = clean_prompt
+            db.commit()
+
+        # Update in-memory / disk job if present
+        async with jobs_lock:
+            if source_id in jobs_db:
+                jobs_db[source_id]["user_prompt"] = clean_prompt
+                jobs_db[source_id]["candidates"] = candidates
+                if "result" in jobs_db[source_id] and isinstance(jobs_db[source_id]["result"], dict):
+                    jobs_db[source_id]["result"]["user_prompt"] = clean_prompt
+                    jobs_db[source_id]["result"]["candidates"] = candidates
+                _save_jobs_to_disk()
+
+        # Update / add clips to DB
+        fake_job = {
+            "id": source_id,
+            "url": s.youtube_url if s else "",
+            "category": s.category if s else "Family Guy",
+            "user_prompt": clean_prompt,
+            "num_clips": num_clips,
+        }
+        fake_result = {
+            "video_title": s.title if s else "Source",
+            "source_video_url": s.source_path if s else None,
+            "candidates": candidates,
+            "highlights": candidates,
+            "transcript": transcript_data,
+        }
+        _save_video_and_clips_to_db(fake_job, fake_result)
+
+        return {
+            "status": "success",
+            "message": f"Successfully re-discovered {len(candidates)} clips matching '{clean_prompt}'.",
+            "user_prompt": clean_prompt,
+            "candidates_count": len(candidates),
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/sources/{source_id}/transcript")
 def get_source_transcript(source_id: str):
     """Fetch transcript segments with word-level timing for a source video."""
@@ -1314,10 +1788,26 @@ def get_source_transcript(source_id: str):
         tr = db.query(Transcript).filter(Transcript.source_id == source_id).first()
         if not tr:
             v = db.query(Video).filter(Video.id == source_id).first()
-            if v and v.transcript_path and os.path.exists(v.transcript_path):
+            transcript_file = v.transcript_path if (v and v.transcript_path) else None
+            if not transcript_file and source_id in jobs_db:
+                transcript_file = jobs_db[source_id].get("transcript_path")
+
+            if transcript_file and os.path.exists(transcript_file):
                 try:
-                    with open(v.transcript_path, "r", encoding="utf-8") as f:
-                        return json.load(f)
+                    with open(transcript_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, dict) and "segments" in data and isinstance(data["segments"], list):
+                            for s in data["segments"]:
+                                if isinstance(s, dict):
+                                    if "start_time" not in s and "start" in s:
+                                        s["start_time"] = s["start"]
+                                    if "end_time" not in s and "end" in s:
+                                        s["end_time"] = s["end"]
+                                    if "start" not in s and "start_time" in s:
+                                        s["start"] = s["start_time"]
+                                    if "end" not in s and "end_time" in s:
+                                        s["end"] = s["end_time"]
+                        return data
                 except Exception:
                     pass
             return {"language": "en", "duration": 0.0, "segments": []}
@@ -1327,6 +1817,8 @@ def get_source_transcript(source_id: str):
                 "id": seg.id,
                 "start": seg.start_time,
                 "end": seg.end_time,
+                "start_time": seg.start_time,
+                "end_time": seg.end_time,
                 "text": seg.text,
                 "words": seg.words_json or [],
             }
@@ -1352,6 +1844,30 @@ def get_source_clips(source_id: str):
         v = db.query(Video).filter(Video.id == source_id).first()
         clips = db.query(Clip).filter(Clip.source_id == source_id, Clip.deleted_at == None).order_by(Clip.start_time.asc()).all()
         src_stream = to_stream_url(v.source_path) if v else None
+
+        if not clips and source_id in jobs_db:
+            job = jobs_db[source_id]
+            candidates = job.get("candidates") or []
+            return [
+                {
+                    "id": f"{source_id}_{idx}",
+                    "source_id": source_id,
+                    "title": c.get("title") or c.get("rank_title") or f"Clip {idx+1}",
+                    "start_time": c.get("start_time") or c.get("start") or 0.0,
+                    "end_time": c.get("end_time") or c.get("end") or 0.0,
+                    "duration": c.get("duration") or round(max(0.0, (c.get("end_time") or c.get("end") or 0.0) - (c.get("start_time") or c.get("start") or 0.0)), 2),
+                    "ai_score": c.get("score") or c.get("ai_score") or 0,
+                    "virality_score": c.get("virality_score") or c.get("score") or 0,
+                    "hook_sentence": c.get("hook_sentence") or c.get("hook") or "",
+                    "emoji": c.get("emoji", "🔥"),
+                    "category": job.get("category", "General"),
+                    "tags": c.get("tags") or [],
+                    "is_favorite": False,
+                    "is_edited": False,
+                }
+                for idx, c in enumerate(candidates)
+            ]
+
         return [
             {
                 "id": c.id,
@@ -1360,7 +1876,7 @@ def get_source_clips(source_id: str):
                 "original_title": c.original_title,
                 "start_time": c.start_time,
                 "end_time": c.end_time,
-                "duration": round(c.end_time - c.start_time, 2),
+                "duration": round(c.end_time - c.start_time, 2) if c.end_time is not None and c.start_time is not None else 0.0,
                 "ai_score": c.ai_score,
                 "ai_reason": c.ai_reason,
                 "hook_sentence": c.hook_sentence,
@@ -1439,6 +1955,8 @@ def create_production(request: ProductionCreateRequest):
             max_duration=request.max_duration or 60.0,
             channel_handle=request.channel_handle,
             transition_type=request.transition_type or "swoosh",
+            countdown_order=bool(request.countdown_order),
+            font_family=request.font_family or "minimal",
             status="draft",
         )
         db.add(prod)
@@ -1497,6 +2015,8 @@ def get_production(production_id: str):
                 "duration": round(dur, 2),
                 "ai_score": c.ai_score,
                 "emoji": c.emoji or "🔥",
+                "category": c.category or "General",
+                "thumbnail_url": f"/api/clips/{c.id}/thumbnail",
                 "source_stream_url": to_stream_url(src.source_path) if src else None,
                 "source_video_title": src.title if src else "",
             })
@@ -1524,6 +2044,8 @@ def get_production(production_id: str):
             "max_duration": p.max_duration,
             "total_duration": round(total_duration, 1),
             "transition_type": p.transition_type,
+            "countdown_order": bool(getattr(p, 'countdown_order', False)),
+            "font_family": getattr(p, "font_family", "minimal") or "minimal",
             "channel_handle": p.channel_handle,
             "status": p.status,
             "render_progress": p.render_progress,
@@ -1573,6 +2095,10 @@ def patch_production(production_id: str, request: ProductionPatchRequest):
             p.max_duration = float(request.max_duration)
         if request.transition_type is not None:
             p.transition_type = request.transition_type
+        if request.countdown_order is not None:
+            p.countdown_order = bool(request.countdown_order)
+        if request.font_family is not None:
+            p.font_family = request.font_family
         if request.channel_handle is not None:
             p.channel_handle = request.channel_handle.strip()
 
@@ -1610,6 +2136,33 @@ def delete_production(production_id: str):
         db.close()
 
 
+def _get_render_file_info(file_path: Optional[str]):
+    """Return (file_size_bytes, duration_seconds) for a rendered video file."""
+    if not file_path or not os.path.exists(file_path):
+        return None, None
+    fsize = None
+    try:
+        fsize = os.path.getsize(file_path)
+    except Exception:
+        pass
+    dur = None
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "json",
+            file_path,
+        ]
+        out = subprocess.check_output(cmd, text=True).strip()
+        if out:
+            data = json.loads(out)
+            if "format" in data and "duration" in data["format"]:
+                dur = round(float(data["format"]["duration"]), 2)
+    except Exception:
+        pass
+    return fsize, dur
+
+
 def _run_production_render_sync(production_id: str):
     """Background worker executing render_production with deterministic caching."""
     db = SessionLocal()
@@ -1635,13 +2188,13 @@ def _run_production_render_sync(production_id: str):
             et = pc.end_override if pc.end_override is not None else c.end_time
             title = pc.custom_title or c.title
 
-            clip_transcript = None
-            if src and src.transcript_path and os.path.exists(src.transcript_path):
-                try:
-                    with open(src.transcript_path, "r", encoding="utf-8") as f:
-                        clip_transcript = json.load(f)
-                except Exception:
-                    pass
+            clip_transcript = _resolve_source_transcript(
+                db,
+                src.id if src else (c.source_id if c else None),
+                src,
+                clip_start=st,
+                clip_end=et,
+            )
 
             clips_for_engine.append({
                 "id": c.id,
@@ -1664,6 +2217,24 @@ def _run_production_render_sync(production_id: str):
 
         header_title = p.title or p.name or "RANKING VIRAL MOMENTS"
 
+        caps_cfg = p.caption_settings
+        if not caps_cfg:
+            caps_cfg = {
+                "captions_enabled": True,
+                "animation": "karaoke",
+                "primary_color": "&H00FFFF&",
+                "font": "dejavu",
+                "size": "54",
+            }
+        elif isinstance(caps_cfg, dict):
+            caps_cfg = dict(caps_cfg)
+            if "captions_enabled" not in caps_cfg:
+                caps_cfg["captions_enabled"] = (caps_cfg.get("animation") != "none")
+            if "font" not in caps_cfg and "caption_font" not in caps_cfg:
+                caps_cfg["font"] = "dejavu"
+            if "size" not in caps_cfg and "caption_size" not in caps_cfg:
+                caps_cfg["size"] = "54"
+
         def _prog(cur, tot, title):
             sub_db = SessionLocal()
             try:
@@ -1681,14 +2252,16 @@ def _run_production_render_sync(production_id: str):
             template=p.template or "ranking",
             aspect_ratio=p.aspect_ratio or "9:16",
             layout_mode=p.layout_mode or "1:1",
-            caption_settings=p.caption_settings,
+            caption_settings=caps_cfg,
             channel_handle=p.channel_handle,
             transition_type=p.transition_type or "swoosh",
+            countdown_order=bool(getattr(p, 'countdown_order', False)),
+            font_family=getattr(p, 'font_family', 'minimal') or 'minimal',
             progress_callback=_prog,
             output_dir=OUTPUT_DIR,
         )
 
-        fsize = os.path.getsize(out_path) if os.path.exists(out_path) else None
+        fsize, dur = _get_render_file_info(out_path)
 
         render_id = f"render_{render_hash}"
         existing_rend = db.query(Render).filter(Render.render_hash == render_hash).first()
@@ -1700,7 +2273,7 @@ def _run_production_render_sync(production_id: str):
                 header_title=header_title,
                 output_file_path=out_path,
                 file_size_bytes=fsize,
-                duration=None,
+                duration=dur,
                 template=p.template,
                 aspect_ratio=p.aspect_ratio,
                 is_preview=False,
@@ -1710,6 +2283,7 @@ def _run_production_render_sync(production_id: str):
         else:
             existing_rend.output_file_path = out_path
             existing_rend.file_size_bytes = fsize
+            existing_rend.duration = dur
             existing_rend.status = "completed"
 
         p.status = "completed"
@@ -1843,21 +2417,46 @@ def list_renders():
     try:
         renders = db.query(Render).order_by(Render.created_at.desc()).all()
         result = []
+        needs_commit = False
         for r in renders:
+            fsize = r.file_size_bytes
+            dur = r.duration
+            if (fsize is None or fsize == 0 or dur is None or dur == 0) and r.output_file_path and os.path.exists(r.output_file_path):
+                calc_size, calc_dur = _get_render_file_info(r.output_file_path)
+                if (fsize is None or fsize == 0) and calc_size:
+                    r.file_size_bytes = calc_size
+                    fsize = calc_size
+                    needs_commit = True
+                if (dur is None or dur == 0) and calc_dur:
+                    r.duration = calc_dur
+                    dur = calc_dur
+                    needs_commit = True
+
             stream_url = to_stream_url(r.output_file_path)
+            display_title = r.header_title or "Rendered Short"
             result.append({
                 "id": r.id,
                 "production_id": r.production_id,
-                "header_title": r.header_title,
+                "header_title": display_title,
+                "title": display_title,
                 "video_url": stream_url,
+                "stream_url": stream_url,
                 "output_file_path": r.output_file_path,
-                "file_size_bytes": r.file_size_bytes,
-                "duration": r.duration,
+                "output_path": r.output_file_path,
+                "file_size_bytes": fsize or 0,
+                "file_size": fsize or 0,
+                "duration": dur,
                 "template": r.template,
                 "aspect_ratio": r.aspect_ratio,
                 "status": r.status,
+                "render_hash": r.render_hash,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             })
+        if needs_commit:
+            try:
+                db.commit()
+            except Exception:
+                pass
         return result
     finally:
         db.close()
@@ -1871,17 +2470,39 @@ def get_render_item(render_id: str):
         r = db.query(Render).filter(Render.id == render_id).first()
         if not r:
             raise HTTPException(status_code=404, detail="Render not found")
+        fsize = r.file_size_bytes
+        dur = r.duration
+        if (fsize is None or fsize == 0 or dur is None or dur == 0) and r.output_file_path and os.path.exists(r.output_file_path):
+            calc_size, calc_dur = _get_render_file_info(r.output_file_path)
+            if (fsize is None or fsize == 0) and calc_size:
+                r.file_size_bytes = calc_size
+                fsize = calc_size
+            if (dur is None or dur == 0) and calc_dur:
+                r.duration = calc_dur
+                dur = calc_dur
+            try:
+                db.commit()
+            except Exception:
+                pass
+
+        stream_url = to_stream_url(r.output_file_path)
+        display_title = r.header_title or "Rendered Short"
         return {
             "id": r.id,
             "production_id": r.production_id,
-            "header_title": r.header_title,
-            "video_url": to_stream_url(r.output_file_path),
+            "header_title": display_title,
+            "title": display_title,
+            "video_url": stream_url,
+            "stream_url": stream_url,
             "output_file_path": r.output_file_path,
-            "file_size_bytes": r.file_size_bytes,
-            "duration": r.duration,
+            "output_path": r.output_file_path,
+            "file_size_bytes": fsize or 0,
+            "file_size": fsize or 0,
+            "duration": dur,
             "template": r.template,
             "aspect_ratio": r.aspect_ratio,
             "status": r.status,
+            "render_hash": r.render_hash,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
     finally:
@@ -2225,6 +2846,13 @@ async def render_custom_short(job_id: str, request: RenderJobRequest, background
                     transcript_data = json.load(tf)
             except Exception:
                 pass
+
+    if not transcript_data:
+        db_sub = SessionLocal()
+        try:
+            transcript_data = _resolve_source_transcript(db_sub, job_id)
+        finally:
+            db_sub.close()
 
     job_out_dir = os.path.join(OUTPUT_DIR, f"job_{job_id}")
     os.makedirs(job_out_dir, exist_ok=True)
@@ -3662,143 +4290,6 @@ async def assemble_precut_clips(request: AssembleClipsRequest):
         db.close()
 
 
-@app.get("/api/channels")
-def list_channels():
-    """List configured YouTube channels."""
-    db = SessionLocal()
-    try:
-        channels = db.query(YouTubeChannel).order_by(YouTubeChannel.created_at.desc()).all()
-        return [
-            {
-                "id": ch.id,
-                "channel_name": ch.channel_name,
-                "credentials_json_path": ch.credentials_json_path,
-                "created_at": ch.created_at.isoformat() if ch.created_at else None,
-                "has_credentials": os.path.exists(ch.credentials_json_path),
-            }
-            for ch in channels
-        ]
-    finally:
-        db.close()
-
-
-@app.post("/api/channels")
-def add_channel(request: ChannelCreateRequest):
-    """Add/authenticate a new YouTube channel using Google OAuth JSON credentials."""
-    db = SessionLocal()
-    try:
-        existing = db.query(YouTubeChannel).filter(YouTubeChannel.channel_name == request.channel_name.strip()).first()
-        if existing:
-            existing.credentials_json_path = request.credentials_json_path.strip()
-            db.commit()
-            db.refresh(existing)
-            return {
-                "status": "success",
-                "message": f"Channel '{existing.channel_name}' credentials updated.",
-                "channel": {
-                    "id": existing.id,
-                    "channel_name": existing.channel_name,
-                    "credentials_json_path": existing.credentials_json_path,
-                },
-            }
-
-        ch = YouTubeChannel(
-            id=str(uuid.uuid4()),
-            channel_name=request.channel_name.strip(),
-            credentials_json_path=request.credentials_json_path.strip(),
-        )
-        db.add(ch)
-        db.commit()
-        db.refresh(ch)
-        return {
-            "status": "success",
-            "message": f"Channel '{ch.channel_name}' added successfully.",
-            "channel": {
-                "id": ch.id,
-                "channel_name": ch.channel_name,
-                "credentials_json_path": ch.credentials_json_path,
-            },
-        }
-    finally:
-        db.close()
-
-
-@app.get("/api/shorts")
-def list_rendered_shorts():
-    """List all generated final .mp4 shorts from RenderedShort database table."""
-    db = SessionLocal()
-    try:
-        shorts = db.query(RenderedShort).order_by(RenderedShort.created_at.desc()).all()
-        result = []
-        for s in shorts:
-            rel_url = None
-            if s.output_file_path:
-                clean = s.output_file_path.replace("\\", "/")
-                if "output/" in clean:
-                    rel_url = f"/output/{clean.split('output/', 1)[1]}"
-                else:
-                    rel_url = f"/output/{os.path.basename(clean)}"
-            result.append({
-                "id": s.id,
-                "header_title": s.header_title,
-                "selected_clip_ids": s.selected_clip_ids,
-                "output_file_path": s.output_file_path,
-                "video_url": rel_url,
-                "assigned_channel": s.assigned_channel,
-                "is_uploaded": s.is_uploaded,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-            })
-        return result
-    finally:
-        db.close()
-
-
-@app.post("/api/shorts/batch-upload")
-def batch_upload_shorts(request: BatchUploadRequest):
-    """Accept array of shorts and trigger automated uploads via google-api-python-client."""
-    from youtube_uploader import upload_short_to_youtube
-    db = SessionLocal()
-    results = []
-    try:
-        for item in request.uploads:
-            short = db.query(RenderedShort).filter(RenderedShort.id == item.short_id).first()
-            if not short:
-                results.append({"short_id": item.short_id, "status": "error", "message": "Rendered short not found."})
-                continue
-
-            ch = db.query(YouTubeChannel).filter(YouTubeChannel.id == item.channel_id).first()
-            credentials_path = ch.credentials_json_path if ch else None
-
-            try:
-                upload_res = upload_short_to_youtube(
-                    file_path=short.output_file_path,
-                    title=item.title or short.header_title,
-                    description=item.description or "",
-                    tags=item.tags,
-                    privacy_status=item.privacy_status or "public",
-                    credentials_path=credentials_path,
-                )
-                short.is_uploaded = True
-                if ch:
-                    short.assigned_channel = ch.channel_name
-                db.commit()
-                results.append({
-                    "short_id": item.short_id,
-                    "status": "success",
-                    "channel_name": ch.channel_name if ch else "Default Channel",
-                    "upload_details": upload_res,
-                })
-            except Exception as exc:
-                results.append({
-                    "short_id": item.short_id,
-                    "status": "error",
-                    "message": str(exc),
-                })
-        return {"status": "success", "results": results}
-    finally:
-        db.close()
-
-
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str):
     async with jobs_lock:
@@ -3839,31 +4330,6 @@ def clear_all_clips():
         v_count = db.query(Video).delete()
         db.commit()
         return {"status": "success", "message": f"Cleared {c_count} clips and {v_count} videos from database."}
-    finally:
-        db.close()
-
-
-@app.delete("/api/shorts/{short_id}")
-def delete_rendered_short(short_id: str):
-    db = SessionLocal()
-    try:
-        s = db.query(RenderedShort).filter(RenderedShort.id == short_id).first()
-        if not s:
-            raise HTTPException(status_code=404, detail=f"Short '{short_id}' not found.")
-        db.delete(s)
-        db.commit()
-        return {"status": "success", "message": f"Short '{short_id}' deleted."}
-    finally:
-        db.close()
-
-
-@app.post("/api/shorts/clear")
-def clear_all_rendered_shorts():
-    db = SessionLocal()
-    try:
-        count = db.query(RenderedShort).delete()
-        db.commit()
-        return {"status": "success", "message": f"Cleared {count} rendered shorts from database."}
     finally:
         db.close()
 

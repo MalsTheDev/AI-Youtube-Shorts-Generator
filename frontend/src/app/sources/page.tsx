@@ -34,7 +34,9 @@ interface SourceItem {
   status: string;
   current_stage: string;
   progress: string;
+  error_message?: string;
   clips_count: number;
+  user_prompt?: string;
   created_at?: string;
 }
 
@@ -45,6 +47,7 @@ export default function SourcesPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [isIngesting, setIsIngesting] = useState(false);
   const [urlInput, setUrlInput] = useState("");
+  const [promptInput, setPromptInput] = useState("");
   const [category, setCategory] = useState("Family Guy");
   const [actionError, setActionError] = useState<string | null>(null);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
@@ -88,10 +91,10 @@ export default function SourcesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           urls: [urlInput.trim()],
-          youtube_url: urlInput.trim(),
           category,
           target_duration: "Auto",
           layout_mode: "1:1",
+          user_prompt: promptInput.trim() || undefined,
         }),
       });
 
@@ -101,6 +104,7 @@ export default function SourcesPage() {
       }
 
       setUrlInput("");
+      setPromptInput("");
       fetchSources();
     } catch (err: any) {
       setActionError(err.message || "Failed to ingest source.");
@@ -152,10 +156,15 @@ export default function SourcesPage() {
     if (statusFilter === "processing") {
       return (
         matchesSearch &&
-        (s.status === "processing" ||
+        (s.status === "queued" ||
+          s.status === "processing" ||
           s.status === "downloading" ||
           s.status === "transcribing" ||
-          s.status === "analyzing")
+          s.status === "analyzing" ||
+          s.current_stage === "queued" ||
+          s.current_stage === "downloading" ||
+          s.current_stage === "transcribing" ||
+          s.current_stage === "analyzing")
       );
     }
     if (statusFilter === "completed") {
@@ -193,44 +202,59 @@ export default function SourcesPage() {
       </div>
 
       {/* Quick Ingest Bar */}
-      <div className="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 shadow-sm backdrop-blur-sm">
-        <form onSubmit={handleSingleIngest} className="flex flex-col sm:flex-row gap-3">
-          <input
-            type="url"
-            value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
-            placeholder="Paste YouTube Video URL (e.g. https://www.youtube.com/watch?v=...)"
-            className="flex-1 px-4 py-2.5 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-600 font-mono transition"
-            required
-          />
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            className="px-3 py-2.5 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 focus:outline-none focus:border-zinc-600 transition"
-          >
-            <option value="Family Guy">Family Guy</option>
-            <option value="Modern Family">Modern Family</option>
-            <option value="Comedy">Comedy</option>
-            <option value="Podcast">Podcast</option>
-            <option value="General">General</option>
-          </select>
-          <button
-            type="submit"
-            disabled={isIngesting}
-            className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-zinc-100 hover:bg-white disabled:opacity-50 text-zinc-900 font-medium text-xs shadow-sm transition shrink-0"
-          >
-            {isIngesting ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Enqueuing...</span>
-              </>
-            ) : (
-              <>
-                <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-                <span>Ingest URL</span>
-              </>
-            )}
-          </button>
+      <div className="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 shadow-sm backdrop-blur-sm space-y-3">
+        <form onSubmit={handleSingleIngest} className="space-y-3">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              type="url"
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              placeholder="Paste YouTube Video URL (e.g. https://www.youtube.com/watch?v=...)"
+              className="flex-1 px-4 py-2.5 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-600 font-mono transition"
+              required
+            />
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="px-3 py-2.5 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 focus:outline-none focus:border-zinc-600 transition"
+            >
+              <option value="Family Guy">Family Guy</option>
+              <option value="Modern Family">Modern Family</option>
+              <option value="Comedy">Comedy</option>
+              <option value="Podcast">Podcast</option>
+              <option value="General">General</option>
+            </select>
+            <button
+              type="submit"
+              disabled={isIngesting}
+              className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-zinc-100 hover:bg-white disabled:opacity-50 text-zinc-900 font-medium text-xs shadow-sm transition shrink-0"
+            >
+              {isIngesting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Enqueuing...</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span>Ingest URL</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Sparkles className="absolute left-3 top-2.5 w-3.5 h-3.5 text-indigo-400" />
+              <input
+                type="text"
+                value={promptInput}
+                onChange={(e) => setPromptInput(e.target.value)}
+                placeholder="AI Focus Prompt (Optional, e.g. 'only stewie savage moments', 'funniest quotes', 'intense fights')"
+                className="w-full pl-9 pr-3 py-2 text-xs bg-zinc-950/80 border border-zinc-800/80 rounded-xl text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 transition"
+              />
+            </div>
+          </div>
         </form>
 
         {actionError && (
@@ -290,10 +314,15 @@ export default function SourcesPage() {
         <div className="space-y-3">
           {filteredSources.map((source) => {
             const isProcessing =
+              source.status === "queued" ||
               source.status === "processing" ||
               source.status === "downloading" ||
               source.status === "transcribing" ||
-              source.status === "analyzing";
+              source.status === "analyzing" ||
+              source.current_stage === "queued" ||
+              source.current_stage === "downloading" ||
+              source.current_stage === "transcribing" ||
+              source.current_stage === "analyzing";
 
             const hasImageError = imageErrors[source.id];
             const thumbSrc = source.thumbnail_url || `/api/sources/${source.id}/thumbnail`;
@@ -357,6 +386,16 @@ export default function SourcesPage() {
                         {source.category || "General"}
                       </span>
 
+                      {source.user_prompt && (
+                        <span
+                          className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-[10px] font-medium text-indigo-300 max-w-[220px] truncate"
+                          title={`Focus: ${source.user_prompt}`}
+                        >
+                          <Sparkles className="w-2.5 h-2.5 shrink-0 text-indigo-400" />
+                          <span className="truncate">&quot;{source.user_prompt}&quot;</span>
+                        </span>
+                      )}
+
                       <Link
                         href={`/sources/${source.id}#clips`}
                         className="flex items-center gap-1 text-[11px] text-zinc-300 hover:text-white font-medium"
@@ -369,22 +408,30 @@ export default function SourcesPage() {
                     {/* Progress / Stage indicator */}
                     <div className="pt-1">
                       {isProcessing ? (
-                        <div className="space-y-1 max-w-sm">
+                        <div className="space-y-1.5 max-w-sm">
                           <div className="flex items-center justify-between text-[11px]">
                             <span className="text-zinc-300 font-medium flex items-center gap-1.5">
-                              <Loader2 className="w-3 h-3 animate-spin text-zinc-400" />
-                              <span className="capitalize">{source.current_stage || source.status}</span>
+                              <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
+                              <span className="capitalize">
+                                {source.current_stage && source.current_stage !== "queued"
+                                  ? source.current_stage
+                                  : source.status === "queued"
+                                  ? "Queued"
+                                  : source.status}
+                              </span>
                             </span>
-                            <span className="text-zinc-400">{source.progress || "In progress..."}</span>
+                            <span className="text-zinc-400 text-[10px] truncate max-w-[200px]" title={source.progress || ""}>
+                              {source.progress || (source.status === "queued" ? "Queued for processing..." : "In progress...")}
+                            </span>
                           </div>
                           <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-                            <div className="h-full bg-zinc-400 rounded-full animate-pulse w-3/4" />
+                            <div className="h-full bg-amber-400/80 rounded-full animate-pulse w-3/4" />
                           </div>
                         </div>
                       ) : source.status === "failed" ? (
                         <div className="flex items-center gap-1.5 text-xs text-rose-400">
                           <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                          <span>Processing failed: {source.progress}</span>
+                          <span>Processing failed: {source.progress || source.error_message}</span>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5 text-xs text-emerald-400">

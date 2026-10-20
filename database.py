@@ -48,6 +48,7 @@ class Video(Base):
     source_path = Column(String(1024), nullable=True)
     transcript_path = Column(String(1024), nullable=True)
     thumbnail_url = Column(String(512), nullable=True)
+    user_prompt = Column(Text, nullable=True)
 
     # Pipeline tracking
     status = Column(String(32), default="completed")  # queued, downloading, downloaded, transcribing, transcribed, analyzing, completed, failed, cancelled
@@ -161,6 +162,8 @@ class Production(Base):
     caption_settings = Column(JSON, nullable=True)
     max_duration = Column(Float, default=60.0)
     transition_type = Column(String(64), default="swoosh")  # swoosh, black_screen
+    countdown_order = Column(Boolean, default=False)  # True = 5,4,3,2,1 countdown; False = 1,2,3,4,5
+    font_family = Column(String(64), default="minimal")  # minimal (Inter), anton (Meme / Impact bold)
     channel_handle = Column(String(255), nullable=True)
     status = Column(String(32), default="draft")  # draft, rendering, completed, failed
     render_progress = Column(String(255), nullable=True)
@@ -221,16 +224,6 @@ class RenderedShort(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class YouTubeChannel(Base):
-    """Configured YouTube channels for OAuth publishing."""
-    __tablename__ = "youtube_channels"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    channel_name = Column(String(255), nullable=False, unique=True)
-    credentials_json_path = Column(String(1024), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
 def get_db():
     db = SessionLocal()
     try:
@@ -258,6 +251,7 @@ def init_db():
                     "error_message": "TEXT NULL",
                     "thumbnail_url": "VARCHAR(512) NULL",
                     "category": "VARCHAR(128) DEFAULT 'Family Guy'",
+                    "user_prompt": "TEXT NULL",
                 }
                 for col_name, col_def in new_video_cols.items():
                     if col_name not in video_cols:
@@ -272,6 +266,13 @@ def init_db():
                     conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN character_name VARCHAR(128) NULL"))
                 if "tags" not in cand_cols:
                     conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN tags TEXT NULL"))
+
+            if "productions" in tables:
+                prod_cols = {c["name"] for c in inspector.get_columns("productions")}
+                if "countdown_order" not in prod_cols:
+                    conn.execute(text("ALTER TABLE productions ADD COLUMN countdown_order TINYINT(1) DEFAULT 0"))
+                if "font_family" not in prod_cols:
+                    conn.execute(text("ALTER TABLE productions ADD COLUMN font_family VARCHAR(64) DEFAULT 'minimal'"))
             conn.commit()
     except Exception as e:
         print(f"[db] Warning during schema column upgrade: {e}", flush=True)

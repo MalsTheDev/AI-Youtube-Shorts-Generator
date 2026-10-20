@@ -22,13 +22,18 @@ LIBERATION_FONT_PATH = os.path.join(FONTS_DIR, "LiberationSans-Bold.ttf")
 NOTO_SANS_PATH = os.path.join(FONTS_DIR, "NotoSans-Bold.ttf")
 ANTON_FONT_PATH = os.path.join(FONTS_DIR, "Anton-Regular.ttf")
 MONTSERRAT_FONT_PATH = os.path.join(FONTS_DIR, "Montserrat-Black.ttf")
-DEJAVU_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-NOTO_EMOJI_PATH = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
+DEJAVU_FONT_PATH = os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf")
+_emoji_candidates = [
+    os.path.join(FONTS_DIR, "NotoColorEmoji.ttf"),
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
+]
+NOTO_EMOJI_PATH = next((p for p in _emoji_candidates if os.path.exists(p)), "")
 SWOOSH_SOUND_PATH = os.path.join(REPO_ROOT, "frontend", "swoosh.mp3")
 CORE_SOUND_PATH = os.path.join(REPO_ROOT, "frontend", "core.mp3")
 
 _emoji_font = None
-if os.path.exists(NOTO_EMOJI_PATH):
+if NOTO_EMOJI_PATH and os.path.exists(NOTO_EMOJI_PATH):
     try:
         _emoji_font = ImageFont.truetype(NOTO_EMOJI_PATH, 109)
     except Exception:
@@ -578,20 +583,107 @@ def format_ass_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+def _to_ass_color(color_str: Optional[str], default: str = "&H0000FFFF") -> str:
+    """Normalize color strings to 8-hex &HAABBGGRR format."""
+    if not color_str:
+        return default
+    c = str(color_str).strip().rstrip("&")
+    if not c.startswith("&H") and not c.startswith("&h"):
+        if c.startswith("#"):
+            hex_c = c.lstrip("#")
+            if len(hex_c) == 6:
+                r, g, b = hex_c[0:2], hex_c[2:4], hex_c[4:6]
+                return f"&H00{b}{g}{r}".upper()
+        c = f"&H{c}"
+    hex_part = c[2:]
+    if len(hex_part) == 6:
+        return f"&H00{hex_part}".upper()
+    elif len(hex_part) == 8:
+        return f"&H{hex_part}".upper()
+    return default
+
+
 def generate_karaoke_ass(
     transcript: Dict[str, Any],
     clip_start: float,
     clip_end: float,
     out_ass_path: str,
     layout_mode: str = "1:1",
+    caption_settings: Optional[Dict[str, Any]] = None,
+    font_family: str = "minimal",
 ) -> str:
-    """Generate ASS subtitle file with compact 1-2 line max styling."""
+    """Generate ASS subtitle file with compact 1-2 line max styling and word-level karaoke."""
     if layout_mode == "1:1":
         margin_v = 220
     elif layout_mode == "16:9":
         margin_v = 670
     else:
         margin_v = 280
+
+    raw_font = None
+    raw_size = None
+    user_color = None
+    animation = "karaoke"
+    if caption_settings:
+        raw_font = caption_settings.get("font") or caption_settings.get("caption_font") or caption_settings.get("font_family")
+        raw_size = caption_settings.get("size") or caption_settings.get("caption_size") or caption_settings.get("font_size")
+        user_color = caption_settings.get("primary_color")
+        if "animation" in caption_settings:
+            animation = str(caption_settings["animation"]).lower()
+
+    if animation == "none":
+        return ""
+
+    chosen_font = str(raw_font or "dejavu").lower()
+    if "anton" in chosen_font or "meme" in chosen_font or "impact" in chosen_font:
+        font_name = "Anton"
+        default_size = 64
+        default_outline = 6
+    elif "montserrat" in chosen_font:
+        font_name = "Montserrat Black"
+        default_size = 58
+        default_outline = 5
+    elif "inter" in chosen_font:
+        font_name = "Inter"
+        default_size = 54
+        default_outline = 5
+    elif "liberation" in chosen_font:
+        font_name = "Liberation Sans"
+        default_size = 54
+        default_outline = 5
+    else:  # dejavu / v1 / classic
+        font_name = "DejaVu Sans"
+        default_size = 54
+        default_outline = 5
+
+    if isinstance(raw_size, (int, float)):
+        font_size = int(raw_size)
+    elif isinstance(raw_size, str):
+        s_clean = raw_size.strip().lower()
+        if s_clean in ("v1", "classic", "standard", "54"):
+            font_size = 54
+        elif s_clean in ("medium", "60"):
+            font_size = 60
+        elif s_clean in ("large", "big", "70", "84"):
+            font_size = 70
+        elif s_clean in ("xlarge", "huge", "80", "96"):
+            font_size = 80
+        elif s_clean in ("small", "compact", "46"):
+            font_size = 46
+        elif s_clean.isdigit():
+            font_size = int(s_clean)
+        else:
+            font_size = default_size
+    else:
+        font_size = default_size
+
+    outline_size = 5 if font_size <= 60 else max(5, int(round(font_size * 0.085)))
+
+    # V1 exact style: Primary is white base, Secondary is yellow karaoke highlight
+    base_color = "&H00FFFFFF"  # Unspoken base text (White)
+    highlight_color = _to_ass_color(user_color, default="&H0000FFFF")  # Spoken word highlight (Yellow)
+    outline_color = "&H00000000"    # Crisp black outline
+    shadow_color = "&H90000000"     # Soft translucent drop shadow
 
     ass_header = f"""[Script Info]
 ScriptType: v4.00+
@@ -601,8 +693,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Karaoke,DejaVu Sans,54,&H00FFFFFF,&H0000FFFF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,5,2,2,60,60,{margin_v},1
-Style: Default,DejaVu Sans,54,&H00FFFFFF,&H000000FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,5,2,2,60,60,{margin_v},1
+Style: Karaoke,{font_name},{font_size},{base_color},{highlight_color},{outline_color},{shadow_color},-1,0,0,0,100,100,0,0,1,{outline_size},2,2,60,60,{margin_v},1
+Style: Default,{font_name},{font_size},{base_color},{highlight_color},{outline_color},{shadow_color},-1,0,0,0,100,100,0,0,1,{outline_size},2,2,60,60,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -617,9 +709,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if s_end <= clip_start or s_start >= clip_end:
             continue
 
-        words = seg.get("words", [])
-        if words:
-            # Group word-level tokens into small punchy chunks (max 3-4 words or 24 chars)
+        raw_words = seg.get("words", [])
+        # Only take words falling within clip boundaries
+        words = [
+            w for w in raw_words
+            if float(w.get("end", 0)) > clip_start and float(w.get("start", 0)) < clip_end and w.get("word", "").strip()
+        ] if raw_words else []
+
+        if words and animation != "clean":
+            # Group word-level tokens into small punchy chunks (max 4-5 words or 30 chars, exactly like V1)
             chunks = []
             curr_chunk = []
             curr_len = 0
@@ -627,7 +725,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 w_text = w.get("word", "").strip()
                 if not w_text:
                     continue
-                if curr_chunk and (len(curr_chunk) >= 4 or curr_len + len(w_text) + 1 > 24):
+                if curr_chunk and (len(curr_chunk) >= 5 or curr_len + len(w_text) + 1 > 30):
                     chunks.append(curr_chunk)
                     curr_chunk = [w]
                     curr_len = len(w_text)
@@ -643,9 +741,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             for chunk in chunks:
                 c_start = float(chunk[0]["start"])
                 c_end = float(chunk[-1]["end"])
-                if c_end <= clip_start or c_start >= clip_end:
-                    continue
-
                 rel_start = max(0.0, c_start - clip_start)
                 rel_end = min(clip_dur, c_end - clip_start)
                 if rel_end <= rel_start:
@@ -656,16 +751,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 karaoke_tokens = []
                 for w in chunk:
-                    w_start = float(w["start"])
-                    w_end = float(w["end"])
-                    w_dur_cs = max(10, int(round((w_end - w_start) * 100)))
+                    w_start = max(clip_start, float(w["start"]))
+                    w_end = min(clip_end, float(w["end"]))
+                    w_dur_cs = max(8, int(round((w_end - w_start) * 100)))
                     word_clean = w["word"].strip().upper()
                     karaoke_tokens.append(f"{{\\k{w_dur_cs}}}{word_clean} ")
 
                 line_text = "".join(karaoke_tokens).strip()
                 dialogues.append(f"Dialogue: 0,{t_start},{t_end},Karaoke,,0,0,0,,{line_text}")
         else:
-            # Segment-level text: split into small 3-4 word chunks and interpolate timing
+            # Segment-level text or clean/static text: split into small 3-4 word chunks and interpolate timing
             seg_text = seg.get("text", "").strip()
             if not seg_text:
                 continue
@@ -674,12 +769,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if not raw_words:
                 continue
 
-            # Chunk into max 3-4 words or max 24 characters to guarantee max 1-2 lines
+            # Chunk into max 4-5 words or max 30 characters to guarantee max 1-2 lines
             chunks = []
             curr_chunk = []
             curr_len = 0
             for rw in raw_words:
-                if curr_chunk and (len(curr_chunk) >= 4 or curr_len + len(rw) + 1 > 24):
+                if curr_chunk and (len(curr_chunk) >= 5 or curr_len + len(rw) + 1 > 30):
                     chunks.append(curr_chunk)
                     curr_chunk = [rw]
                     curr_len = len(rw)
@@ -715,6 +810,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 t_end = format_ass_time(rel_e)
                 chunk_text = " ".join(chunk).strip().upper()
                 dialogues.append(f"Dialogue: 0,{t_start},{t_end},Default,,0,0,0,,{chunk_text}")
+
+    if not dialogues:
+        return ""
 
     os.makedirs(os.path.dirname(out_ass_path), exist_ok=True)
     with open(out_ass_path, "w", encoding="utf-8") as f:
@@ -767,7 +865,8 @@ def render_single_segment(
     ass_filter = ""
     if ass_path and os.path.exists(ass_path):
         safe_ass = ass_path.replace("\\", "/").replace(":", "\\:")
-        ass_filter = f",ass='{safe_ass}'"
+        safe_fonts = os.path.abspath(FONTS_DIR).replace("\\", "/").replace(":", "\\:")
+        ass_filter = f",ass='{safe_ass}':fontsdir='{safe_fonts}'"
 
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
@@ -978,6 +1077,7 @@ def render_ranking_short(
     layout_mode: str = "1:1",
     channel_handle: Optional[str] = None,
     captions_enabled: bool = True,
+    caption_settings: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Any] = None,
     template_type: str = "ranking",
     countdown_order: bool = False,
@@ -1054,15 +1154,17 @@ def render_ranking_short(
         # 2. Generate ASS subtitles only if captions are enabled
         if captions_enabled and clip_transcript:
             ass_candidate = os.path.join(work_dir, f"subtitles_{idx + 1:02d}.ass")
-            generate_karaoke_ass(
+            res_ass = generate_karaoke_ass(
                 transcript=clip_transcript,
                 clip_start=float(clip["start_time"]),
                 clip_end=float(clip["end_time"]),
                 out_ass_path=ass_candidate,
                 layout_mode=layout_mode,
+                caption_settings=caption_settings,
+                font_family=font_family,
             )
-            if os.path.exists(ass_candidate):
-                ass_path = ass_candidate
+            if res_ass and os.path.exists(res_ass) and os.path.getsize(res_ass) > 0:
+                ass_path = res_ass
 
         # 3. Render segment with FFmpeg
         render_single_segment(
@@ -1125,6 +1227,10 @@ def compute_render_hash(
     layout_mode: str = "1:1",
     caption_settings: Optional[Dict[str, Any]] = None,
     header_title: Optional[str] = None,
+    transition_type: str = "swoosh",
+    font_family: str = "minimal",
+    countdown_order: bool = False,
+    channel_handle: Optional[str] = None,
 ) -> str:
     """Generate a deterministic SHA-256 hash for a production render configuration."""
     clip_signatures = []
@@ -1144,6 +1250,10 @@ def compute_render_hash(
         "layout_mode": layout_mode or "1:1",
         "header_title": header_title or "",
         "caption_settings": caption_settings or {},
+        "transition_type": transition_type or "swoosh",
+        "font_family": font_family or "minimal",
+        "countdown_order": bool(countdown_order),
+        "channel_handle": channel_handle.strip() if channel_handle else "",
     }
     raw = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -1161,8 +1271,10 @@ class BaseTemplateRenderer:
         layout_mode: str = "1:1",
         channel_handle: Optional[str] = None,
         captions_enabled: bool = True,
+        caption_settings: Optional[Dict[str, Any]] = None,
         transition_type: str = "swoosh",
         font_family: str = "minimal",
+        countdown_order: bool = False,
         progress_callback: Optional[Any] = None,
         is_preview: bool = False,
     ) -> str:
@@ -1181,8 +1293,10 @@ class RankingTemplateRenderer(BaseTemplateRenderer):
         layout_mode: str = "1:1",
         channel_handle: Optional[str] = None,
         captions_enabled: bool = True,
+        caption_settings: Optional[Dict[str, Any]] = None,
         transition_type: str = "swoosh",
         font_family: str = "minimal",
+        countdown_order: bool = False,
         progress_callback: Optional[Any] = None,
         is_preview: bool = False,
     ) -> str:
@@ -1196,9 +1310,10 @@ class RankingTemplateRenderer(BaseTemplateRenderer):
             layout_mode=layout_mode,
             channel_handle=channel_handle,
             captions_enabled=captions_enabled,
+            caption_settings=caption_settings,
             progress_callback=progress_callback,
             template_type="ranking",
-            countdown_order=False,
+            countdown_order=countdown_order,
             transition_type=transition_type,
             font_family=font_family,
         )
@@ -1216,8 +1331,10 @@ class SingleTitleTemplateRenderer(BaseTemplateRenderer):
         layout_mode: str = "1:1",
         channel_handle: Optional[str] = None,
         captions_enabled: bool = True,
+        caption_settings: Optional[Dict[str, Any]] = None,
         transition_type: str = "swoosh",
         font_family: str = "minimal",
+        countdown_order: bool = False,
         progress_callback: Optional[Any] = None,
         is_preview: bool = False,
     ) -> str:
@@ -1231,6 +1348,7 @@ class SingleTitleTemplateRenderer(BaseTemplateRenderer):
             layout_mode=layout_mode,
             channel_handle=channel_handle,
             captions_enabled=captions_enabled,
+            caption_settings=caption_settings,
             progress_callback=progress_callback,
             template_type="single_title",
             countdown_order=False,
@@ -1256,6 +1374,7 @@ def render_production(
     channel_handle: Optional[str] = None,
     transition_type: str = "swoosh",
     font_family: str = "minimal",
+    countdown_order: bool = False,
     is_preview: bool = False,
     progress_callback: Optional[Any] = None,
     output_dir: str = "output",
@@ -1277,6 +1396,10 @@ def render_production(
         layout_mode=layout_mode,
         caption_settings=caption_settings,
         header_title=header_title,
+        transition_type=transition_type,
+        font_family=font_family,
+        countdown_order=countdown_order,
+        channel_handle=channel_handle,
     )
 
     renders_dir = os.path.join(output_dir, "renders", production_id)
@@ -1301,8 +1424,10 @@ def render_production(
         layout_mode=layout_mode,
         channel_handle=channel_handle,
         captions_enabled=captions_enabled,
+        caption_settings=caption_settings,
         transition_type=transition_type,
         font_family=font_family,
+        countdown_order=countdown_order,
         progress_callback=progress_callback,
         is_preview=is_preview,
     )

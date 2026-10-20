@@ -42,9 +42,10 @@ def call_gemini_llm(prompt: str) -> str:
 
     candidate_models = [
         GEMINI_MODEL,
-        "gemini-flash-latest",
         "gemini-3.5-flash-lite",
         "gemini-3.5-flash",
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
     ]
     seen = set()
     models_to_try = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
